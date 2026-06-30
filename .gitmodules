@@ -1,0 +1,21 @@
+[submodule "third-party/fmt"]
+	path = third-party/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "third-party/torch-supa-op"]
+	path = third-party/torch-supa-op
+	url = https://github.com/birentech/torch-supa-op.git
+[submodule "third-party/glog"]
+	path = third-party/glog
+	url = https://github.com/google/glog.git
+[submodule "third-party/gflags"]
+	path = third-party/gflags
+	url = https://github.com/gflags/gflags.git
+[submodule "third-party/kineto"]
+	path = third-party/kineto
+	url = https://github.com/birentech/br_kineto.git
+[submodule "third-party/flash-attention"]
+	path = third-party/flash-attention
+	url = https://github.com/birentech/flash-attention.git
+[submodule "third-party/sutlass"]
+	path = third-party/sutlass
+	url = https://github.com/birentech/sutlass.git

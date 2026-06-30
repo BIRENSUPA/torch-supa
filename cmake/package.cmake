@@ -1,0 +1,76 @@
+# Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd.
+
+set(PACKAGE_PROJECT_VERSION ${PYTORCH_REL_VERSION})
+
+# Get Platform type
+if(EXISTS "/etc/os-release")
+  file(READ "/etc/os-release" OS_RELEASE)
+  string(REGEX MATCH "Debian|Ubuntu" MATCH_RESULT ${OS_RELEASE})
+  if(MATCH_RESULT STREQUAL "Ubuntu" OR MATCH_RESULT STREQUAL "Debian")
+    set(PLATFORM "debian_like")
+  else()
+    set(PLATFORM "not_debian_like")
+  endif()
+  message(STATUS "Get PLATFORM type: ${PLATFORM}")
+else()
+  message(FATAL_ERROR "No /etc/os-release found")
+endif()
+
+# Common cpack parameters
+set(CPACK_PACKAGE_VERSION ${PACKAGE_PROJECT_VERSION})
+set(CPACK_PACKAGE_CONTACT "BIREN TECHNOLOGY <business@birentech.com>")
+set(CPACK_PACKAGE_DESCRIPTION "BIREN Pytorch Framework")
+set(CPACK_PACKAGE_RELOCATABLE ON)
+set(CPACK_CMAKE_GENERATOR Ninja)
+
+# RPM cpack parameters
+set(CPACK_RPM_PACKAGE_GROUP "BIREN")
+set(CPACK_RPM_PACKAGE_LICENSE "BIRENTECH Proprietary")
+set(CPACK_RPM_PACKAGE_SUMMARY "BIREN Pytorch for biren GPGPU products")
+set(CPACK_RPM_PACKAGE_DESCRIPTION ${CPACK_PACKAGE_DESCRIPTION})
+set(CPACK_RPM_PACKAGE_VENDOR ${CPACK_PACKAGE_CONTACT})
+set(CPACK_RPM_PACKAGE_URL "https://www.birentech.com/")
+
+if (USE_SPLIT_SUPA STREQUAL "OFF"  AND  BR_BUILD_WITH_DIOPI STREQUAL "ON")
+  set(CPACK_PACKAGE_VERSION "0.1.0")
+  set(CPACK_PACKAGE_NAME "biren-diopi")
+  set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION /usr/local/supa /usr/local/supa/lib64)
+endif()
+
+set(PACKAGE_FILE_NAME "${CPACK_PACKAGE_VERSION}")
+# Add build id to version
+if(DEFINED ENV{VERSION_WITH_BUILD_ID})
+  message("ENV{VERSION_WITH_BUILD_ID}: $ENV{VERSION_WITH_BUILD_ID}")
+  if($ENV{VERSION_WITH_BUILD_ID} STREQUAL "ON")
+    set(CPACK_RPM_PACKAGE_RELEASE $ENV{BUILD_ID})
+    set(CPACK_DEBIAN_PACKAGE_RELEASE $ENV{BUILD_ID})
+    set(PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME}-$ENV{BUILD_ID}")
+  endif()
+endif()
+
+
+# Packaging
+if(PLATFORM STREQUAL "debian_like")
+  set(CPACK_GENERATOR "DEB")
+  set(PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME}-amd64")
+else()
+  set(CPACK_GENERATOR "RPM")
+  set(PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME}.x86_64")
+endif()
+
+include(CPack)
+
+if(USE_SPLIT_SUPA)
+  install(TARGETS ${LIBSUPAOP} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  add_custom_target(br_ops_pkg
+      COMMAND cpack --config ${CMAKE_CURRENT_BINARY_DIR}/CPackConfig.cmake -D CPACK_PACKAGE_FILE_NAME="biren-ops-${PACKAGE_FILE_NAME}" -D CPACK_PACKAGING_INSTALL_PREFIX="/usr/local/"
+      DEPENDS ${LIBSUPAOP}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+elseif (BR_BUILD_WITH_DIOPI)
+  install(TARGETS ${DIOPI_NAME} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  add_custom_target(diopi_pkg
+      COMMAND cpack --config ${CMAKE_CURRENT_BINARY_DIR}/CPackConfig.cmake -D CPACK_PACKAGE_FILE_NAME="biren-diopi-${PACKAGE_FILE_NAME}" -D CPACK_PACKAGING_INSTALL_PREFIX="/usr/local/supa"
+      DEPENDS ${DIOPI_NAME}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+endif()

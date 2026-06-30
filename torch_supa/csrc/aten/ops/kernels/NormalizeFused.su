@@ -1,0 +1,337 @@
+/* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
+
+#include <math.h>
+#include <supa.h>
+
+#include "torch_supa/csrc/core/supa/SUPAException.h"
+#include "torch_supa/csrc/core/supa/SUPAStream.h"
+
+namespace at::supa {
+namespace {
+
+constexpr int kSingleWarpColsThreshold = 64;
+constexpr int kTwoWarpColsThreshold = 128;
+constexpr int kSmallBlockColsThreshold = 256;
+constexpr int kLargeBlockColsThreshold = 512;
+constexpr int kMaxBlockThreads = 256;
+constexpr int kMaxBlockWarps = kMaxBlockThreads / 32;
+
+static __device__ __forceinline__ float warp_reduce_sum(float value) {
+  for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  return value;
+}
+
+template <int MAX_COLS, int ROWS_PER_BLOCK>
+__global__ void normalize_fused_warp_bucket_kernel(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps) {
+  int tid = threadIdx.x;
+  int lane = tid & (warpSize - 1);
+  int warp = tid / warpSize;
+  int row = blockIdx.x * ROWS_PER_BLOCK + warp;
+  if (row >= rows) {
+    return;
+  }
+
+  const float* row_in = input + row * cols;
+  float* row_out = output + row * cols;
+
+  float sum = 0.0f;
+  int col0 = lane;
+  int col1 = lane + warpSize;
+  if (col0 < cols) {
+    float x = row_in[col0];
+    sum += x * x;
+  }
+  if (MAX_COLS > warpSize && col1 < cols) {
+    float x = row_in[col1];
+    sum += x * x;
+  }
+
+  sum = warp_reduce_sum(sum);
+  float total = __shfl_sync(0xffffffff, sum, 0);
+  float inv = total > eps_square ? rsqrtf(total) : inv_eps;
+
+  if (col0 < cols) {
+    row_out[col0] = row_in[col0] * inv;
+  }
+  if (MAX_COLS > warpSize && col1 < cols) {
+    row_out[col1] = row_in[col1] * inv;
+  }
+}
+
+template <int MAX_COLS, int ROWS_PER_BLOCK>
+__global__ void normalize_fused_two_warp_bucket_kernel(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps) {
+  __shared__ float partial_sums[kMaxBlockWarps];
+
+  int tid = threadIdx.x;
+  int lane = tid & (warpSize - 1);
+  int warp = tid / warpSize;
+  int row_warp = warp >> 1;
+  int half = warp & 1;
+  int row = blockIdx.x * ROWS_PER_BLOCK + row_warp;
+  bool row_valid = row < rows;
+
+  const float* row_in = input + (row_valid ? row * cols : 0);
+  float* row_out = output + (row_valid ? row * cols : 0);
+  int base_col = half * 64;
+
+  float sum = 0.0f;
+  int col0 = base_col + lane;
+  int col1 = col0 + warpSize;
+  if (row_valid && col0 < cols) {
+    float x = row_in[col0];
+    sum += x * x;
+  }
+  if (row_valid && MAX_COLS > 64 && col1 < cols && col1 < base_col + 64) {
+    float x = row_in[col1];
+    sum += x * x;
+  }
+
+  sum = warp_reduce_sum(sum);
+  if (lane == 0) {
+    partial_sums[warp] = sum;
+  }
+  __syncthreads();
+  if (!row_valid) {
+    return;
+  }
+
+  float total = partial_sums[row_warp * 2] + partial_sums[row_warp * 2 + 1];
+  float inv = total > eps_square ? rsqrtf(total) : inv_eps;
+
+  if (col0 < cols) {
+    row_out[col0] = row_in[col0] * inv;
+  }
+  if (MAX_COLS > 64 && col1 < cols && col1 < base_col + 64) {
+    row_out[col1] = row_in[col1] * inv;
+  }
+}
+
+template <int MAX_COLS>
+__global__ void normalize_fused_block_bucket_kernel(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps) {
+  __shared__ float warp_sums[kMaxBlockWarps];
+
+  int tid = threadIdx.x;
+  int lane = tid & (warpSize - 1);
+  int warp = tid / warpSize;
+  int row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const float* row_in = input + row * cols;
+  float* row_out = output + row * cols;
+
+  float sum = 0.0f;
+  int col0 = tid;
+  int col1 = tid + blockDim.x;
+  if (col0 < cols) {
+    float x = row_in[col0];
+    sum += x * x;
+  }
+  if (MAX_COLS > 256 && col1 < cols) {
+    float x = row_in[col1];
+    sum += x * x;
+  }
+
+  sum = warp_reduce_sum(sum);
+
+  int num_warps = (blockDim.x + warpSize - 1) / warpSize;
+  if (num_warps > kMaxBlockWarps) {
+    return;
+  }
+  if (lane == 0) {
+    warp_sums[warp] = sum;
+  }
+  __syncthreads();
+
+  float block_sum = 0.0f;
+  if (warp == 0) {
+    block_sum = lane < num_warps ? warp_sums[lane] : 0.0f;
+    block_sum = warp_reduce_sum(block_sum);
+  }
+  if (tid == 0) {
+    warp_sums[0] = block_sum;
+  }
+  __syncthreads();
+
+  float inv = warp_sums[0] > eps_square ? rsqrtf(warp_sums[0]) : inv_eps;
+
+  if (col0 < cols) {
+    row_out[col0] = row_in[col0] * inv;
+  }
+  if (MAX_COLS > 256 && col1 < cols) {
+    row_out[col1] = row_in[col1] * inv;
+  }
+}
+
+__global__ void normalize_fused_block_dynamic_kernel(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps) {
+  __shared__ float warp_sums[kMaxBlockWarps];
+
+  int tid = threadIdx.x;
+  int lane = tid & (warpSize - 1);
+  int warp = tid / warpSize;
+  int row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const float* row_in = input + row * cols;
+  float* row_out = output + row * cols;
+
+  float sum = 0.0f;
+  for (int col = tid; col < cols; col += 2 * blockDim.x) {
+    int col0 = col;
+    int col1 = col + blockDim.x;
+    if (col0 < cols) {
+      float x = row_in[col0];
+      sum += x * x;
+    }
+    if (col1 < cols) {
+      float x = row_in[col1];
+      sum += x * x;
+    }
+  }
+
+  sum = warp_reduce_sum(sum);
+
+  int num_warps = (blockDim.x + warpSize - 1) / warpSize;
+  if (num_warps > kMaxBlockWarps) {
+    return;
+  }
+  if (lane == 0) {
+    warp_sums[warp] = sum;
+  }
+  __syncthreads();
+
+  float block_sum = 0.0f;
+  if (warp == 0) {
+    block_sum = lane < num_warps ? warp_sums[lane] : 0.0f;
+    block_sum = warp_reduce_sum(block_sum);
+  }
+  if (tid == 0) {
+    warp_sums[0] = block_sum;
+  }
+  __syncthreads();
+
+  float inv = warp_sums[0] > eps_square ? rsqrtf(warp_sums[0]) : inv_eps;
+
+  for (int col = tid; col < cols; col += 2 * blockDim.x) {
+    int col0 = col;
+    int col1 = col + blockDim.x;
+    if (col0 < cols) {
+      row_out[col0] = row_in[col0] * inv;
+    }
+    if (col1 < cols) {
+      row_out[col1] = row_in[col1] * inv;
+    }
+  }
+}
+
+template <int ROWS_PER_BLOCK>
+static void launch_warp_bucket(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps,
+    int block_size) {
+  dim3 block(block_size);
+  dim3 grid((rows + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK);
+  normalize_fused_warp_bucket_kernel<kSingleWarpColsThreshold, ROWS_PER_BLOCK>
+      <<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+          input, output, rows, cols, eps_square, inv_eps);
+}
+
+template <int ROWS_PER_BLOCK>
+static void launch_two_warp_bucket(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps_square,
+    float inv_eps,
+    int block_size) {
+  dim3 block(block_size);
+  dim3 grid((rows + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK);
+  normalize_fused_two_warp_bucket_kernel<kTwoWarpColsThreshold, ROWS_PER_BLOCK>
+      <<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+          input, output, rows, cols, eps_square, inv_eps);
+}
+
+} // namespace
+
+void normalize_fused_kernel_launch(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps,
+    int block_size) {
+  TORCH_CHECK(block_size <= kMaxBlockThreads, "normalize_fused block_size exceeds shared-memory reduction capacity");
+  float eps_square = eps * eps;
+  float inv_eps = 1.0f / eps;
+  if (cols <= kSingleWarpColsThreshold) {
+    if (block_size <= 64) {
+      launch_warp_bucket<2>(input, output, rows, cols, eps_square, inv_eps, 64);
+    } else if (block_size <= 128) {
+      launch_warp_bucket<4>(input, output, rows, cols, eps_square, inv_eps, 128);
+    } else {
+      launch_warp_bucket<8>(input, output, rows, cols, eps_square, inv_eps, 256);
+    }
+  } else if (cols <= kTwoWarpColsThreshold) {
+    if (block_size <= 64) {
+      launch_two_warp_bucket<1>(input, output, rows, cols, eps_square, inv_eps, 64);
+    } else if (block_size <= 128) {
+      launch_two_warp_bucket<2>(input, output, rows, cols, eps_square, inv_eps, 128);
+    } else {
+      launch_two_warp_bucket<4>(input, output, rows, cols, eps_square, inv_eps, 256);
+    }
+  } else if (cols <= kSmallBlockColsThreshold) {
+    dim3 block(256);
+    dim3 grid(rows);
+    normalize_fused_block_bucket_kernel<kSmallBlockColsThreshold>
+        <<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+            input, output, rows, cols, eps_square, inv_eps);
+  } else if (cols <= kLargeBlockColsThreshold) {
+    dim3 block(256);
+    dim3 grid(rows);
+    normalize_fused_block_bucket_kernel<kLargeBlockColsThreshold>
+        <<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+            input, output, rows, cols, eps_square, inv_eps);
+  } else {
+    dim3 block(256);
+    dim3 grid(rows);
+    normalize_fused_block_dynamic_kernel<<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+        input, output, rows, cols, eps_square, inv_eps);
+  }
+  C10_SUPA_KERNEL_LAUNCH_CHECK();
+}
+
+} // namespace at::supa

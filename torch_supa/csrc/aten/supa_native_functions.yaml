@@ -1,0 +1,72 @@
+# Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd.
+
+backend: SUPA
+cpp_namespace: at::supa
+supported:
+  - _addmm_activation.out
+  - _pin_memory
+  - _cdist_forward
+  - _cdist_backward
+  - _copy_from
+  - _copy_from_and_resize
+  - _index_put_impl_
+  - addmm.out
+  - addmv.out
+  - baddbmm.out
+  - bmm.out
+  - cdist
+  - convolution_overrideable
+  - convolution_backward_overrideable
+  - copy_
+  - dot.out
+  - empty_strided
+  - empty.memory_format
+  - _fused_sdp_choice
+  - is_pinned
+  - index.Tensor_out
+  - linalg_vector_norm.out
+  - _linalg_solve_ex.result
+  - masked_fill_.Scalar
+  - mm.out
+  - mode
+  - mode.values
+  - _pdist_forward
+  - _pdist_backward
+  - record_stream
+  - std.correction
+  - std.correction_out
+  - var.correction
+  - var.correction_out
+  - var_mean.correction
+  - var_mean.correction_out
+  - std_mean.correction
+  - std_mean.correction_out
+  - vdot.out
+  - scaled_dot_product_attention
+  - _scaled_dot_product_flash_attention
+  - _scaled_dot_product_flash_attention_backward
+  - _scaled_dot_product_efficient_attention
+  - _scaled_dot_product_efficient_attention_backward
+  - _batch_norm_impl_index
+  - _batch_norm_impl_index_backward
+  - _scaled_dot_product_cudnn_attention
+  - _scaled_dot_product_cudnn_attention_backward
+  - renorm.out
+  - binary_cross_entropy_with_logits
+
+preserve_quantized_dispatch:
+  - _index_put_impl_
+
+perf_supported:
+perf_autograd:
+
+autograd:
+  - renorm
+  - renorm_
+
+custom: # for debug internal api or fused torch api
+  - func: _get_data_ptr(Tensor self) -> int
+  - func: normalize_fused(Tensor input, float eps) -> Tensor
+    tags: fused_torch_api
+  - func: one_hot_fused(Tensor self, int num_classes) -> Tensor
+    tags: fused_torch_api

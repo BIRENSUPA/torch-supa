@@ -1,0 +1,83 @@
+torch_supa.egg-info/
+torch_supa/csrc/build/
+torch_supa/libtorch_supa/
+dist/
+build/
+build_*/
+*.swp
+.nfs*
+*.log
+__pycache__
+.pytest_cache
+.pymon
+.sqlite3
+.sqlite3-journal
+/[0-9]*
+script/torch
+torch_supa/version.py
+torch_supa/csrc/utils/version.h
+torch_supa/csrc/aten/autograd/generated/*
+torch_supa/csrc/aten/core/*Functions.h
+torch_supa/csrc/aten/core/
+torch_supa/csrc/aten/generated/NativeMetaFunctions.h
+torch_supa/csrc/aten/generated/NativeFunctions.h
+torch_supa/csrc/core/supa/TorchVersion.h
+torch_supa/csrc/aten/ForeachRegister.cpp
+torch_supa/csrc/aten/RegisterSUPA.cpp
+torch_supa/csrc/aten/RegisterAutogradSUPA.cpp
+torch_supa/csrc/aten/generated/Register*.cpp
+torch_supa/csrc/aten/generated/Register*.h
+torch_supa/csrc/aten/Custom*.cpp
+torch_supa/csrc/aten/Custom*.h
+torch_supa/csrc/interface/python_custom_functions.cpp
+torch_supa/testing/*.pyi
+torch_supa/utils/custom_ops.py
+ksyn/
+log_p*.txt
+perf_*.txt
+perf_*.json
+*trace.json
+call_stack.txt
+profiler_log/
+agent/
+logs/
+pytest.ini
+tmp_perf_guard_trace.json
+perf_charts/
+test/test_models/data/
+test/data/
+test/native_ci/**/test_*
+
+# BEGIN NOT-CLEAN-FILES
+.vscode/
+torch_supa/csrc/aten/autograd/generated/README.md
+
+# Igore clangd configuration file: https://clangd.llvm.org/config
+# Here is an example used in local development env:
+#
+# +--- file: .clangd ----------------------------------------------------------+
+# | CompileFlags:                     # Tweak the parse settings               |
+# |   CompilationDatabase: build/Debug                                         |
+# |   Compiler: /usr/local/supa/bin/brcc                                       |
+# +----------------------------------------------------------------------------+
+#
+# Since the directory of the compilation database varies according to the build
+# type, we leave it to developers to configure.
+.clangd
+.cache
+test/native_ci/bottleneck_test/
+test/native_ci/conftest.py
+test/native_ci/cpp_api_parity/
+test/native_ci/cpp_extensions/
+test/native_ci/fx/
+test/native_ci/jit/
+test/native_ci/lazy/
+test/native_ci/package/
+test/native_ci/pytest_shard_custom.py
+test/native_ci/quantization/
+test/native_ci/slow_tests.json
+test/native_ci/temp_tests/
+test/native_ci/test-reports/
+test/native_ci/tools/
+test/native_ci/torch_np/
+.agents/skills/debugger/jobs/

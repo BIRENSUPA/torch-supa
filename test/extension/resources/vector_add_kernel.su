@@ -1,0 +1,27 @@
+/* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
+
+#include <supa_runtime.h>
+
+namespace {
+__global__ void add(float* A, float* B, float* C, int64_t N) {
+  int64_t i = threadIdx.x;
+  if (i < N) {
+    C[i] = A[i] + B[i];
+  }
+}
+} // namespace
+
+namespace supa_kernel {
+
+supaError_t vector_add(const float* a, const float* b, float* c, int64_t n) {
+  void* args[] = {
+      const_cast<void*>(static_cast<const void*>(&a)),
+      const_cast<void*>(static_cast<const void*>(&b)),
+      const_cast<void*>(static_cast<const void*>(&c)),
+      const_cast<void*>(static_cast<const void*>(&n))};
+
+  auto err = supaLaunchKernel(add, dim3(1, 1, 1), dim3(n, 1, 1), args, 0, 0);
+  return err;
+}
+
+} // namespace supa_kernel

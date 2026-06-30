@@ -1,0 +1,800 @@
+/* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
+
+#include "torch_supa/csrc/distributed/supa/Utils.hpp"
+#include "torch_supa/csrc/distributed/symm_mem/SUPASymmetricMemory-inl.h"
+#include "torch_supa/csrc/distributed/symm_mem/SUPASymmetricMemory.hpp"
+#include "torch_supa/csrc/distributed/symm_mem/SUPASymmetricMemoryUtils.hpp"
+
+#include <ATen/ceil_div.h>
+#include <c10/util/error.h>
+#include <torch/csrc/distributed/c10d/GroupRegistry.hpp>
+
+#include "torch_supa/csrc/core/supa/PeerToPeerAccess.h"
+#include "torch_supa/csrc/core/supa/SUPACachingAllocator.h"
+#include "torch_supa/csrc/core/supa/SUPAContext.h"
+#include "torch_supa/csrc/core/supa/SUPAGuard.h"
+
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "torch_supa/csrc/core/supa/DriverAPI.h"
+
+#define SUPART_SUPPORTS_MULTICAST
+
+namespace c10d::supa::symmetric_memory {
+
+#if TORCH_VER >= TORCH_2_6_0
+
+using namespace c10d::symmetric_memory;
+
+/* Start of SUPASymmetricMemory implementation */
+
+// A set of exchange methods with prefix "SUPASymmetricMemory"
+static StoreExchange storeExchange = StoreExchange("SUPASymmetricMemory");
+
+AllocationRef::AllocationRef(void* ptr, HandleType handle, size_t block_size, int device_idx, bool is_multicast)
+    : ptr(ptr), handle(handle), block_size(block_size), device_idx(device_idx), is_multicast(is_multicast) {}
+
+AllocationRef::~AllocationRef() {
+  if (is_finalizing()) {
+    return;
+  }
+  c10::supa::SUPAGuard guard(device_idx);
+  C10_SUPA_CHECK(supaDeviceSynchronize());
+  // Leak the supa allocations during static deinitialization
+  auto* driver_api = c10::supa::DriverAPI::get();
+  C10_SUPA_DRIVER_CHECK(driver_api->suMemUnmap_(reinterpret_cast<SUdeviceptr>(ptr), block_size));
+#if defined(SUPART_SUPPORTS_MULTICAST)
+  if (is_multicast) {
+    C10_SUPA_DRIVER_CHECK(driver_api->suMulticastUnbind_(handle, device_idx, 0, block_size));
+  }
+#endif
+  C10_SUPA_DRIVER_CHECK(driver_api->suMemRelease_(handle));
+}
+
+SUPAPeerAllocInfo::SUPAPeerAllocInfo(
+    std::vector<c10::intrusive_ptr<AllocationRef>> alloc_refs,
+    std::vector<void*> buffers,
+    std::vector<void*> signal_pads,
+    HandleType mc_handle,
+    void* mc_addr,
+    size_t buffer_size,
+    int local_device_idx,
+    int rank,
+    int world_size)
+    : alloc_refs_(std::move(alloc_refs)),
+      buffers_(std::move(buffers)),
+      signal_pads_(std::move(signal_pads)),
+      mc_handle_(mc_handle),
+      mc_addr_(mc_addr),
+      buffer_size_(buffer_size),
+      local_device_idx_(local_device_idx),
+      rank_(rank),
+      world_size_(world_size) {
+  const size_t arr_size = sizeof(void*) * world_size_;
+  buffers_dev_ = reinterpret_cast<void**>(c10::supa::SUPACachingAllocator::raw_alloc(arr_size));
+  signal_pads_dev_ = reinterpret_cast<void**>(c10::supa::SUPACachingAllocator::raw_alloc(arr_size));
+
+  c10::supa::SUPAGuard guard(local_device_idx);
+  C10_SUPA_CHECK(supaMemcpy(buffers_dev_, buffers_.data(), arr_size, supaMemcpyHostToDevice));
+  C10_SUPA_CHECK(supaMemcpy(signal_pads_dev_, signal_pads_.data(), arr_size, supaMemcpyHostToDevice));
+}
+
+/* Start of SUPASymmetricMemory */
+
+// This is mostly a shallow copy that shares the pointer to `SUPAPeerAllocInfo`
+// which corresponds to the base Block. The SUPASymmetricMemory handle is
+// specified by the offset to the base ptr.
+SUPASymmetricMemory::SUPASymmetricMemory(const c10::intrusive_ptr<SUPAPeerAllocInfo>& pai, size_t offset)
+    : local_device_idx_(pai->local_device_idx_),
+      rank_(pai->rank_),
+      world_size_(pai->world_size_),
+      pai_(pai),
+      offset_(offset) {
+  // offset is specific per symm_mem handle
+  TORCH_INTERNAL_ASSERT(offset_ < pai_->buffer_size_, "offset out of range");
+}
+
+std::vector<void*> SUPASymmetricMemory::get_buffer_ptrs() {
+  return pai_->buffers_;
+}
+
+std::vector<void*> SUPASymmetricMemory::get_signal_pad_ptrs() {
+  return pai_->signal_pads_;
+}
+
+void** SUPASymmetricMemory::get_buffer_ptrs_dev() {
+  return pai_->buffers_dev_;
+}
+
+void** SUPASymmetricMemory::get_signal_pad_ptrs_dev() {
+  return pai_->signal_pads_dev_;
+}
+
+size_t SUPASymmetricMemory::get_buffer_size() {
+  return pai_->buffer_size_;
+}
+
+bool SUPASymmetricMemory::has_multicast_support() {
+  return pai_->mc_addr_ != nullptr;
+}
+
+void* SUPASymmetricMemory::get_multicast_ptr() {
+  return pai_->mc_addr_;
+}
+
+#if TORCH_VER >= TORCH_2_9_0
+size_t SUPASymmetricMemory::get_offset() {
+  return offset_;
+}
+
+c10::Device SUPASymmetricMemory::get_device() {
+  return c10::Device(c10::DeviceType::PrivateUse1, local_device_idx_);
+}
+
+bool SUPASymmetricMemory::world_within_direct_access() {
+  return true;
+}
+#endif
+
+void check_channel(int channel, int world_size) {
+  TORCH_CHECK(
+      channel >= 0,
+      "channel for barrier(), put_signal() and wait_signal() ",
+      "must be greater than 0 (got ",
+      channel,
+      ")");
+#if TORCH_VER >= TORCH_2_10_0
+  const size_t num_channels = c10d::symmetric_memory::get_signal_pad_size() / sizeof(uint32_t) * world_size;
+#else
+  const size_t num_channels = signal_pad_size / sizeof(uint32_t) * world_size;
+#endif
+  TORCH_CHECK(
+      static_cast<size_t>(channel) < num_channels,
+      "The maximum supported channel for barrier(), put_signal() and wait_signal() is ",
+      num_channels - 1,
+      " (got ",
+      channel,
+      ")");
+}
+
+static __global__ void barrier_kernel(
+    uint32_t** signal_pads,
+    int channel,
+    int rank,
+    int world_size,
+    size_t timeout_ms) {
+  if (threadIdx.x < world_size) {
+    auto target_rank = threadIdx.x;
+    if (target_rank == rank) {
+      return;
+    }
+    auto put_success =
+        try_put_signal<std::memory_order_release>(signal_pads[target_rank] + world_size * channel + rank, timeout_ms);
+    if (!put_success) {
+      printf(
+          "[FATAL] SUPASymmetricMemory::barrier: rank %d failed to send signal "
+          "to rank %d on channel %d after %lu microseconds\n",
+          rank,
+          target_rank,
+          channel,
+          timeout_ms);
+      trap();
+    }
+    auto wait_success =
+        try_wait_signal<std::memory_order_acquire>(signal_pads[rank] + world_size * channel + target_rank, timeout_ms);
+    if (!wait_success) {
+      printf(
+          "[FATAL] SUPASymmetricMemory::barrier: rank %d failed to receive signal "
+          "from rank %d on channel %d after %lu microseconds\n",
+          rank,
+          target_rank,
+          channel,
+          timeout_ms);
+      trap();
+    }
+  }
+}
+
+void SUPASymmetricMemory::barrier(int channel, size_t timeout_ms) {
+  check_channel(channel, world_size_);
+  c10::supa::SUPAGuard guard(local_device_idx_);
+  barrier_kernel<<<1, at::supa::warp_size(), 0, c10::supa::getCurrentSUPAStream()>>>(
+      reinterpret_cast<uint32_t**>(pai_->signal_pads_dev_), channel, rank_, world_size_, timeout_ms);
+  C10_SUPA_KERNEL_LAUNCH_CHECK();
+}
+
+static __global__ void put_signal_kernel(
+    uint32_t** signal_pads,
+    int dst_rank,
+    int channel,
+    int rank,
+    int world_size,
+    size_t timeout_ms) {
+  if (threadIdx.x == 0) {
+    bool success =
+        try_put_signal<std::memory_order_release>(signal_pads[dst_rank] + world_size * channel + rank, timeout_ms);
+    if (!success) {
+      printf(
+          "[FATAL] SUPASymmetricMemory::put_signal: rank %d failed to send signal "
+          "to rank %d on channel %d after %lu microseconds\n",
+          rank,
+          dst_rank,
+          channel,
+          timeout_ms);
+      trap();
+    }
+  }
+}
+
+void SUPASymmetricMemory::put_signal(int dst_rank, int channel, size_t timeout_ms) {
+  check_channel(channel, world_size_);
+  c10::supa::SUPAGuard guard(local_device_idx_);
+  put_signal_kernel<<<1, at::supa::warp_size(), 0, c10::supa::getCurrentSUPAStream()>>>(
+      reinterpret_cast<uint32_t**>(pai_->signal_pads_dev_), dst_rank, channel, rank_, world_size_, timeout_ms);
+  C10_SUPA_KERNEL_LAUNCH_CHECK();
+}
+
+static __global__ void wait_signal_kernel(
+    uint32_t** signal_pads,
+    int src_rank,
+    int channel,
+    int rank,
+    int world_size,
+    size_t timeout_ms) {
+  if (threadIdx.x == 0) {
+    bool success =
+        try_wait_signal<std::memory_order_acquire>(signal_pads[rank] + world_size * channel + src_rank, timeout_ms);
+    if (!success) {
+      printf(
+          "[FATAL] SUPASymmetricMemory::wait_signal rank %d failed to receive signal "
+          "from rank %d on channel %d after %lu microseconds\n",
+          rank,
+          src_rank,
+          channel,
+          timeout_ms);
+      __trap();
+    }
+  }
+  __threadfence_system();
+}
+
+void SUPASymmetricMemory::wait_signal(int src_rank, int channel, size_t timeout_ms) {
+  check_channel(channel, world_size_);
+  c10::supa::SUPAGuard guard(local_device_idx_);
+  wait_signal_kernel<<<1, at::supa::warp_size(), 0, c10::supa::getCurrentSUPAStream()>>>(
+      reinterpret_cast<uint32_t**>(pai_->signal_pads_dev_), src_rank, channel, rank_, world_size_, timeout_ms);
+  C10_SUPA_KERNEL_LAUNCH_CHECK();
+}
+
+int SUPASymmetricMemory::get_rank() {
+  return rank_;
+}
+
+int SUPASymmetricMemory::get_world_size() {
+  return world_size_;
+}
+
+/* End of SUPASymmetricMemory */
+
+Block::Block(
+    c10::intrusive_ptr<AllocationRef> alloc_ref,
+    int device_idx,
+    size_t block_size,
+    size_t buffer_size,
+    size_t signal_pad_offset,
+    const std::optional<std::string>& group_name)
+    : alloc_ref(std::move(alloc_ref)),
+      device_idx(device_idx),
+      block_size(block_size),
+      buffer_size(buffer_size),
+      signal_pad_offset(signal_pad_offset),
+      default_group_name(std::move(group_name)) {}
+
+namespace {
+using Expandable_Segments_Handle_Type = c10::supa::SUPACachingAllocator::Expandable_Segments_Handle_Type;
+}
+
+void* SUPASymmetricMemoryAllocator::alloc(size_t size, int device_idx, const std::optional<std::string>& group_name) {
+  size_t signal_pad_offset = at::round_up(size, 16UL);
+#if TORCH_VER >= TORCH_2_10_0
+  size_t block_size = signal_pad_offset + get_signal_pad_size();
+#else
+  size_t block_size = signal_pad_offset + signal_pad_size;
+#endif
+  c10::supa::SUPAGuard guard(device_idx);
+  device_idx = static_cast<int>(guard.current_device().index());
+  SUmemAllocationProp prop = {};
+  prop.type = SU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = SU_MEM_LOCATION_TYPE_DEVICE;
+  // NOLINTNEXTLINE(bugprone-signed-char-misuse)
+  prop.location.id = device_idx;
+  bool has_fabric_support = at::supa::get_fabric_access(device_idx);
+  LOG(INFO) << "SUPASymmetricMemoryAllocator::alloc: has_fabric_support " << has_fabric_support;
+  if (handle_type_ == Expandable_Segments_Handle_Type::UNSPECIFIED) {
+    handle_type_ =
+        has_fabric_support ? Expandable_Segments_Handle_Type::FABRIC_HANDLE : Expandable_Segments_Handle_Type::POSIX_FD;
+  }
+  if (handle_type_ == Expandable_Segments_Handle_Type::POSIX_FD) {
+    prop.requestedHandleTypes = SU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  } else {
+    prop.requestedHandleTypes = SU_MEM_HANDLE_TYPE_FABRIC;
+  }
+
+  size_t granularity;
+  auto* driver_api = c10::supa::DriverAPI::get();
+  C10_SUPA_DRIVER_CHECK(
+      driver_api->suMemGetAllocationGranularity_(&granularity, &prop, SU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
+  block_size = at::round_up(block_size, granularity);
+
+  HandleType handle;
+  C10_SUPA_DRIVER_CHECK(driver_api->suMemCreate_(&handle, block_size, &prop, 0));
+
+  void* ptr = nullptr;
+  map_block(&ptr, handle, block_size, device_idx);
+
+  C10_SUPA_CHECK(supaMemset(ptr, 0, block_size));
+
+  auto alloc_ref = c10::make_intrusive<AllocationRef>(ptr, handle, block_size, device_idx);
+  auto block =
+      c10::make_intrusive<Block>(std::move(alloc_ref), device_idx, block_size, size, signal_pad_offset, group_name);
+  {
+    std::unique_lock lock(mutex_);
+    ptr_to_block_.emplace(ptr, std::move(block));
+  }
+  return ptr;
+}
+
+void SUPASymmetricMemoryAllocator::free(void* ptr) {
+  std::unique_lock lock(mutex_);
+  ptr_to_block_.erase(ptr);
+}
+
+size_t SUPASymmetricMemoryAllocator::get_alloc_size(void* ptr) {
+  auto block = find_block(ptr);
+  TORCH_CHECK(
+      block != nullptr,
+      "SUPASymmetricMemoryAllocator::get_alloc_size: input must be allocated ",
+      "via SUPASymmetricMemoryAllocator::alloc");
+  return block->buffer_size;
+}
+
+struct RendezvousRequest {
+  int device_idx;
+  int pid;
+  size_t block_size;
+  size_t buffer_size;
+  size_t signal_pad_offset;
+  bool has_multicast_support;
+  char hostname[HOST_NAME_MAX + 1];
+};
+
+void validate_rendezvous_requests(const std::vector<RendezvousRequest>& reqs, int world_size) {
+  TORCH_CHECK(reqs.size() == (size_t)world_size);
+
+  std::set<std::pair<std::string, int>> device_host_pairs;
+  for (auto req : reqs) {
+    device_host_pairs.insert(std::make_pair(std::string(req.hostname), req.device_idx));
+  }
+  if (!allow_overlapping_devices() && device_host_pairs.size() < (size_t)world_size) {
+    TORCH_CHECK(
+        false,
+        "SUPASymmetricMemoryAllocator::rendezvous: ",
+        "detected allocations from overlapping devices ",
+        "from different ranks.");
+  }
+
+  for (int r = 1; r < world_size; ++r) {
+    TORCH_CHECK(reqs[r].block_size == reqs[0].block_size);
+    TORCH_CHECK(reqs[r].buffer_size == reqs[0].buffer_size);
+    TORCH_CHECK(reqs[r].signal_pad_offset == reqs[0].signal_pad_offset);
+  }
+}
+
+static bool check_group_multicast_support(const std::vector<RendezvousRequest>& reqs) {
+  std::vector<size_t> ranks_with_multicast_support;
+  for (size_t r = 0; r < reqs.size(); ++r) {
+    if (reqs[r].has_multicast_support) {
+      ranks_with_multicast_support.push_back(r);
+    }
+  }
+  if (ranks_with_multicast_support.size() == reqs.size()) {
+    return true;
+  }
+  if (ranks_with_multicast_support.size() != 0) {
+    LOG(WARNING) << "Only a subset of ranks in the group has multicast support: " << ranks_with_multicast_support
+                 << " (world_size=" << reqs.size()
+                 << "). Skipping multicast initialization because this is unexpected.";
+  }
+  return false;
+}
+
+template <bool use_fabric_handle>
+static void init_multicast_for_block(
+    HandleType& mc_handle,
+    void*& mc_addr,
+    const c10::intrusive_ptr<Block>& block,
+    std::conditional_t<!use_fabric_handle, IpcChannel&, int&> ipc_channel,
+    const std::vector<int>& pids,
+    const c10::intrusive_ptr<c10d::Store>& store,
+    int rank,
+    int world_size) {
+#if defined(SUPART_SUPPORTS_MULTICAST)
+  auto* driver_api = c10::supa::DriverAPI::get();
+  auto handleType = use_fabric_handle ? SU_MEM_HANDLE_TYPE_FABRIC : SU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  using McHandleType = std::conditional_t<use_fabric_handle, SUmemFabricHandle, int>;
+
+  McHandleType invalidator;
+  std::memset(&invalidator, UINT8_MAX, sizeof(McHandleType));
+
+  McHandleType mc_exported_handle{};
+  if (rank == 0) {
+    SUmulticastObjectProp mc_prop{};
+    mc_prop.numDevices = world_size;
+    mc_prop.handleTypes = handleType;
+    mc_prop.size = block->block_size;
+
+    try {
+      C10_SUPA_DRIVER_CHECK(driver_api->suMulticastCreate_(&mc_handle, &mc_prop));
+      C10_SUPA_DRIVER_CHECK(driver_api->suMemExportToShareableHandle_(&mc_exported_handle, mc_handle, handleType, 0));
+    } catch (const std::exception& e) {
+      mc_exported_handle = invalidator;
+      LOG(WARNING) << "SymmetricMemory: fail to export multicast handle.\n" << e.what();
+    }
+  }
+
+  McHandleType recv_handle;
+  if constexpr (!use_fabric_handle) {
+    recv_handle = ipc_channel.broadcast_fds(rank, 0, pids, mc_exported_handle);
+  } else {
+    auto gathered_handles = storeExchange.all_gather(store, rank, world_size, mc_exported_handle);
+    recv_handle = std::move(gathered_handles[0]);
+  }
+
+  if (memcmp(&recv_handle, &invalidator, sizeof(McHandleType)) == 0) {
+    LOG(WARNING) << "Gracefully skipping multicast initialization.";
+    return;
+  }
+
+  bool success_end = false;
+
+  if (rank != 0) {
+    if constexpr (!use_fabric_handle) {
+      C10_SUPA_DRIVER_CHECK_GOTO(
+          driver_api->suMemImportFromShareableHandle_(
+              &mc_handle, (void*)(uintptr_t)recv_handle, SU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR),
+          check_all);
+    } else {
+      C10_SUPA_DRIVER_CHECK_GOTO(
+          driver_api->suMemImportFromShareableHandle_(&mc_handle, (void*)&(recv_handle), SU_MEM_HANDLE_TYPE_FABRIC),
+          check_all);
+    }
+  }
+
+  C10_SUPA_DRIVER_CHECK_GOTO(driver_api->suMulticastAddDevice_(mc_handle, block->device_idx), check_all);
+  C10_SUPA_DRIVER_CHECK_GOTO(
+      driver_api->suMulticastBindMem_(mc_handle, 0, block->alloc_ref->handle, 0, block->block_size, 0), check_all);
+
+  success_end = true;
+
+check_all:
+  bool all_succeed = true;
+  auto rank_successes = storeExchange.all_gather(store, rank, world_size, success_end);
+  for (int r = 0; r < world_size; ++r) {
+    all_succeed &= rank_successes[r];
+  }
+  if constexpr (!use_fabric_handle) {
+    close(recv_handle);
+  }
+  if (!all_succeed) {
+    LOG(WARNING) << "Gracefully skipping multicast initialization.";
+    return;
+  }
+
+  map_block(&mc_addr, mc_handle, block->block_size, block->device_idx);
+#endif
+}
+
+namespace {
+template <bool use_fabric_handle>
+c10::intrusive_ptr<SUPAPeerAllocInfo> make_peer_alloc_info(
+    void* ptr,
+    c10::intrusive_ptr<Block> block,
+#if TORCH_VER < TORCH_2_11_0
+    const ::c10d::symmetric_memory::GroupInfo& group_info
+#else
+    const std::string& group_name
+#endif
+) {
+  using BlockHandleType = std::conditional_t<use_fabric_handle, SUmemFabricHandle, int>;
+  BlockHandleType block_handle;
+  c10::supa::SUPAGuard guard(block->device_idx);
+  if constexpr (!use_fabric_handle) {
+    LOG(INFO) << "using posix fd to import symmetric memory handles.";
+  } else {
+    LOG(INFO) << "using fabric handle to import symmetric memory handles.";
+  }
+
+#if TORCH_VER < TORCH_2_11_0
+  auto store = group_info.store;
+  int rank = group_info.rank;
+  int world_size = group_info.world_size;
+#else
+  auto group = ::c10d::resolve_process_group(group_name);
+  auto rank = group->getRank();
+  auto world_size = group->getSize();
+  auto store = group->getStore();
+#endif
+
+  using IpcChannelType = std::conditional_t<use_fabric_handle, int, IpcChannel>;
+  IpcChannelType ipc_channel;
+
+  auto* driver_api = c10::supa::DriverAPI::get();
+  C10_SUPA_DRIVER_CHECK(driver_api->suMemExportToShareableHandle_(
+      &block_handle,
+      block->alloc_ref->handle,
+      use_fabric_handle ? SU_MEM_HANDLE_TYPE_FABRIC : SU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+      0));
+
+  auto local_req = RendezvousRequest{
+      .device_idx = block->device_idx,
+      .pid = getpid(),
+      .block_size = block->block_size,
+      .buffer_size = block->buffer_size,
+      .signal_pad_offset = block->signal_pad_offset,
+      .has_multicast_support = device_has_multicast_support(block->device_idx)};
+
+  gethostname(local_req.hostname, sizeof(local_req.hostname));
+  auto reqs = storeExchange.all_gather(store, rank, world_size, local_req);
+  validate_rendezvous_requests(reqs, world_size);
+
+  std::vector<int> pids(world_size);
+  for (int r = 0; r < world_size; ++r) {
+    pids[r] = reqs[r].pid;
+  }
+
+  std::vector<BlockHandleType> imported_handles;
+  if constexpr (!use_fabric_handle) {
+    imported_handles = ipc_channel.all_gather_fds(rank, pids, block_handle);
+  } else {
+    imported_handles = storeExchange.all_gather(store, rank, world_size, block_handle);
+  }
+
+  std::vector<HandleType> handles(world_size);
+  std::vector<void*> buffers(world_size, nullptr);
+  std::vector<void*> signal_pads(world_size, nullptr);
+
+  for (int r = 0; r < world_size; ++r) {
+    if (r == rank) {
+      handles[r] = block->alloc_ref->handle;
+      buffers[r] = ptr;
+      signal_pads[r] = (void*)((uintptr_t)ptr + block->signal_pad_offset);
+      continue;
+    }
+    if constexpr (!use_fabric_handle) {
+      C10_SUPA_DRIVER_CHECK(driver_api->suMemImportFromShareableHandle_(
+          &handles[r], (void*)(uintptr_t)imported_handles[r], SU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+    } else {
+      C10_SUPA_DRIVER_CHECK(driver_api->suMemImportFromShareableHandle_(
+          &handles[r], (void*)&(imported_handles[r]), SU_MEM_HANDLE_TYPE_FABRIC));
+    }
+    map_block(&buffers[r], handles[r], block->block_size, block->device_idx);
+    signal_pads[r] = (void*)((uintptr_t)buffers[r] + block->signal_pad_offset);
+    if constexpr (!use_fabric_handle) {
+      close(imported_handles[r]);
+    }
+  }
+  storeExchange.barrier(store, rank, world_size);
+  if constexpr (!use_fabric_handle) {
+    close(block_handle);
+  }
+
+  HandleType mc_handle{};
+  void* mc_addr = nullptr;
+  bool group_has_multicast_support = check_group_multicast_support(reqs);
+  if (!allow_overlapping_devices() && group_has_multicast_support) {
+    init_multicast_for_block<use_fabric_handle>(mc_handle, mc_addr, block, ipc_channel, pids, store, rank, world_size);
+  }
+
+  std::vector<c10::intrusive_ptr<AllocationRef>> alloc_refs;
+  for (int r = 0; r < world_size; ++r) {
+    if (r == rank) {
+      if (mc_addr != nullptr) {
+        alloc_refs.push_back(
+            c10::make_intrusive<AllocationRef>(mc_addr, mc_handle, block->block_size, block->device_idx, true));
+      }
+      alloc_refs.emplace_back(block->alloc_ref);
+      continue;
+    }
+    alloc_refs.push_back(
+        c10::make_intrusive<AllocationRef>(buffers[r], handles[r], block->block_size, block->device_idx));
+  }
+
+  auto pai = c10::make_intrusive<SUPAPeerAllocInfo>(
+      std::move(alloc_refs),
+      std::move(buffers),
+      std::move(signal_pads),
+      mc_handle,
+      mc_addr,
+      block->buffer_size,
+      block->device_idx,
+      rank,
+      world_size);
+
+  return pai;
+}
+
+} // namespace
+
+c10::intrusive_ptr<SymmetricMemory> SUPASymmetricMemoryAllocator::rendezvous(
+    void* ptr,
+    const std::optional<std::string>& group_name) {
+  size_t offset = 0;
+  auto block = find_block_covering(ptr, offset);
+  if (block == nullptr) {
+    TORCH_WARN(
+        "Pointer not within any SymmetricMemory allocation, "
+        "is the tensor allocated from SymmetricMemory?");
+    return nullptr;
+  }
+  std::string group_name_;
+  if (group_name.has_value() && group_name != "") {
+    group_name_ = *group_name;
+  } else {
+    if (!block->default_group_name.has_value()) {
+      TORCH_CHECK(
+          false,
+          "SUPASymmetricMemory::rendezvous: `group_name` is neither "
+          "specified during allocation nor passed to rendezvous().");
+    }
+    group_name_ = *block->default_group_name;
+  }
+
+  auto it = block->symm_mems.find(group_name_);
+  if (it == block->symm_mems.end()) {
+#if TORCH_VER < TORCH_2_11_0
+    auto group_info = ::c10d::symmetric_memory::get_group_info(group_name_);
+#else
+    auto group_info = group_name_;
+#endif
+    TORCH_INTERNAL_ASSERT(handle_type_ != Expandable_Segments_Handle_Type::UNSPECIFIED)
+    bool use_fabric = handle_type_ == Expandable_Segments_Handle_Type::FABRIC_HANDLE;
+    auto pai = use_fabric ? make_peer_alloc_info<true>(ptr, block, group_info)
+                          : make_peer_alloc_info<false>(ptr, block, group_info);
+    it = block->symm_mems.emplace(group_name_, pai).first;
+  }
+
+  auto pai = it->second;
+  return c10::make_intrusive<SUPASymmetricMemory>(pai, offset);
+}
+
+bool SUPASymmetricMemoryAllocator::has_multicast_support(int device_idx) {
+  return device_has_multicast_support(device_idx);
+}
+
+#if TORCH_VER >= TORCH_2_9_0
+c10::DeviceType SUPASymmetricMemoryAllocator::supported_device_type() {
+  return c10::DeviceType::PrivateUse1;
+}
+
+std::string SUPASymmetricMemoryAllocator::name() {
+  return "SUPA";
+}
+#endif
+#if TORCH_VER >= TORCH_2_5_0 && TORCH_VER < TORCH_2_10_0
+size_t SUPASymmetricMemory::get_signal_pad_size() {
+  return signal_pad_size;
+}
+#endif
+#if TORCH_VER >= TORCH_2_5_0 && TORCH_VER < TORCH_2_9_0
+at::Tensor SUPASymmetricMemory::get_buffer(
+    int rank,
+    c10::IntArrayRef sizes,
+    c10::ScalarType dtype,
+    int64_t storage_offset) {
+  const auto numel = std::accumulate(sizes.begin(), sizes.end(), 1, std::multiplies<int>());
+  const auto element_size = c10::elementSize(dtype);
+  const auto req_size = (numel + storage_offset) * element_size;
+  TORCH_CHECK(
+      req_size <= pai_->buffer_size_,
+      "SUPASymmetricMemory::get_buffer: the requested size (",
+      req_size,
+      " bytes) exceeds the allocated size (",
+      pai_->buffer_size_,
+      " bytes)");
+  auto device = c10::Device(c10::DeviceType::PrivateUse1, local_device_idx_);
+  auto options = at::TensorOptions().dtype(dtype).device(device);
+  return at::for_blob(pai_->buffers_[rank], sizes)
+      .storage_offset(storage_offset)
+      .options(options)
+      .target_device(device)
+      .make_tensor();
+}
+#endif
+#if TORCH_VER >= TORCH_2_6_0 && TORCH_VER < TORCH_2_9_0
+at::Tensor SUPASymmetricMemory::get_signal_pad(
+    int rank,
+    c10::IntArrayRef sizes,
+    std::optional<c10::ScalarType> dtype,
+    int64_t storage_offset) {
+  // If the dtype is unspecified, default it to UInt32, as it
+  // is the most common type for signaling purposes.
+  if (!dtype.has_value()) {
+    dtype = c10::ScalarType::UInt32;
+  }
+
+  // If the shape is unspecified, treat the signal pad as a 1d tensor.
+  const auto element_size = c10::elementSize(*dtype);
+  std::vector<int64_t> shape;
+  if (!sizes.empty()) {
+    shape = sizes.vec();
+  } else {
+    shape.push_back(signal_pad_size / element_size);
+  }
+
+  const size_t numel = std::accumulate(shape.begin(), shape.end(), static_cast<size_t>(1), std::multiplies<size_t>());
+  const auto req_size = (numel + storage_offset) * element_size;
+  TORCH_CHECK(
+      req_size <= signal_pad_size,
+      "SUPASymmetricMemory::get_signal_pad: the requested size (",
+      req_size,
+      " bytes) exceeds the allocated size (",
+      signal_pad_size,
+      " bytes)");
+  auto data_ptr = reinterpret_cast<uint8_t*>(pai_->signal_pads_[rank]) + storage_offset * element_size;
+  auto device = c10::Device(c10::DeviceType::PrivateUse1, local_device_idx_);
+  auto options = at::TensorOptions().dtype(*dtype).device(device);
+  return at::for_blob(data_ptr, shape).options(options).target_device(device).make_tensor();
+}
+#endif
+
+c10::intrusive_ptr<Block> SUPASymmetricMemoryAllocator::find_block(void* ptr) {
+  std::shared_lock lock(mutex_);
+  auto it = ptr_to_block_.find(ptr);
+  if (it == ptr_to_block_.end()) {
+    return nullptr;
+  }
+  return it->second;
+}
+
+/* Search for a block that covers the given ptr, and write back the offset to
+ * the base ptr; error out if not found */
+c10::intrusive_ptr<Block> SUPASymmetricMemoryAllocator::find_block_covering(void* ptr, size_t& offset) {
+  std::shared_lock lock(mutex_);
+  auto alloc_it = std::find_if(ptr_to_block_.begin(), ptr_to_block_.end(), [&](const auto& pair) {
+    auto& block = pair.second;
+    auto& allocation = block->alloc_ref;
+    auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
+    auto base_ptr = reinterpret_cast<uintptr_t>(allocation->ptr);
+    offset = ptr_int - base_ptr;
+    return ptr_int >= base_ptr && offset < block->buffer_size;
+  });
+
+  if (alloc_it == ptr_to_block_.end()) {
+    return nullptr;
+  }
+
+  return alloc_it->second;
+}
+
+struct RegisterSUPASymmetricMemoryAllocator {
+  RegisterSUPASymmetricMemoryAllocator() {
+    auto allocator = c10::make_intrusive<SUPASymmetricMemoryAllocator>();
+    // Query backend used for SUPA tensor
+    // "SUPA" backend stands for this implementation
+    if (getSymmMemBackendSUPA() == "SUPA") {
+      register_allocator(c10::DeviceType::PrivateUse1, allocator);
+    }
+#if TORCH_VER >= TORCH_2_9_0
+    else {
+      register_availability("SUPA", allocator);
+    }
+#endif
+  }
+};
+
+static RegisterSUPASymmetricMemoryAllocator register_allocator_;
+
+#endif
+
+} // namespace c10d::supa::symmetric_memory

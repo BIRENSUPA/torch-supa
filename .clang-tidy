@@ -1,0 +1,70 @@
+---
+Checks: '
+  -*,
+
+  cppcoreguidelines-*,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-pro-type-cstyle-cast,
+  -cppcoreguidelines-pro-type-const-cast,
+
+  clang-*,
+  -clang-analyzer-valist.Uninitialized,
+  -clang-diagnostic-unused-command-line-argument,
+
+  google-*,
+  -google-runtime-references,
+  -google-readability-braces-around-statements,
+
+  llvm-*,
+  -llvm-header-guard,
+  -llvm-include-order,
+  -llvm-else-after-return,
+
+  modernize-*,
+  -modernize-use-using,
+  -modernize-avoid-c-arrays,
+  -modernize-use-trailing-return-type,
+  -modernize-pass-by-value,
+  -modernize-use-nodiscard,
+
+  performance-*,
+  -performance-no-int-to-ptr,
+
+  readability-*,
+  -readability-magic-numbers,
+  -readability-implicit-bool-conversion,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-convert-member-functions-to-stati,
+  -readability-use-anyofallof,
+  -readability-inconsistent-declaration-parameter-name,
+  -readability-convert-member-functions-to-static,
+  -readability-suspicious-call-argument,
+
+  portability-*,
+
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-static-assert,
+  -misc-no-recursion
+  '
+
+HeaderFilterRegex: '.*torch_supa/.*'
+WarningsAsErrors: 'readability-*, bugprone-*, clang-analyzer-*, cppcoreguidelines-*'
+FormatStyle:      google
+ExtraArgsBefore:
+  - '-isystem/usr/include/c++/11'
+  - '-isystem/usr/include/x86_64-linux-gnu/c++/11'
+  - '-isystem/usr/include/x86_64-linux-gnu'
+  - '-isystem/usr/include'

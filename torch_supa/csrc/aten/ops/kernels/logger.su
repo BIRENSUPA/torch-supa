@@ -1,0 +1,88 @@
+/* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
+
+/*
+ * Copyright (c) 2025 Shanghai Biren Technology Co., Ltd. All rights reserved.
+ */
+
+#include "torch_supa/csrc/aten/ops/kernels/logger.h"
+
+#include <cstdio>
+#include <cstdarg>
+#include <mutex>
+#include <sys/time.h>
+
+namespace at::supa {
+
+const char *SupaKernelLog::RetrieveLogLevelName(SupaKernelLogLevel level) noexcept {
+  switch (level) {
+  case SupaKernelLogLevel::LOG_DEBUG:
+    return "DEBUG";
+  case SupaKernelLogLevel::LOG_INFO:
+    return "INFO";
+  case SupaKernelLogLevel::LOG_WARNING:
+    return "WARN";
+  case SupaKernelLogLevel::LOG_ERROR:
+    return "ERROR";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+const char *SupaKernelLog::GetTimeStamp() {
+  timeval ts{};
+  gettimeofday(&ts, nullptr);
+  std::array<char, 10> localtime{0};
+  tm buf{};
+  std::strftime(localtime.data(), localtime.size(), "%T", localtime_r(&ts.tv_sec, &buf));
+  snprintf(timestamp_.data(), timestamp_.size(), "%s:%.3ld", localtime.data(), ts.tv_usec / 1000);
+  return timestamp_.data();
+}
+
+namespace {
+std::once_flag env_flag;
+}
+
+void EnvVarCallOnce() {
+  auto env = std::getenv("BRTB_SUPA_KERNEL_TRACE");
+  if (!env || env[0] == '\0') {
+    SupaKernelLog::Reset(false);
+  } else if (env[0] != '\0' || env[1] != '\0') {
+    SupaKernelLog::Reset(true);
+  } else {
+    SupaKernelLog::Reset(false);
+  }
+}
+
+bool SupaKernelLog::CheckCanLog(SupaKernelLogLevel level) {
+  std::call_once(env_flag, EnvVarCallOnce);
+  return level >= log_level_ && can_log_;
+}
+
+#define RETRIEVE_LOG_BUFFER()                                           \
+  do {                                                                  \
+    std::va_list ap;                                                    \
+    va_start(ap, format);                                               \
+    vsnprintf(log_buffer_.data(), log_buffer_.size(), format, ap); \
+    va_end(ap);                                                         \
+  } while (0)
+
+void SupaKernelLog::LogPrintf(const char *moduleColor, const char *moduleName,
+                              SupaKernelLogLevel level, const char *file, int line,
+                              const char *func, const char *color, const char *format, ...) {
+  RETRIEVE_LOG_BUFFER();
+  fprintf(
+      stderr,
+      "%s[%s] %s%s %s%-6s %4d: %s, %s%s\n",
+      moduleColor,
+      moduleName,
+      kTIMESTAMP_COLOR,
+      GetTimeStamp(),
+      color,
+      RetrieveLogLevelName(level),
+      line,
+      func,
+      log_buffer_.data(),
+      kRESET_COLOR);
+}
+
+} // namespace at::supa

@@ -1,0 +1,739 @@
+---
+name: torch-create-new-op
+description: Helps users create new PyTorch operators in the torch_supa project. Use when users mention new operators, creating ops, implementing operators, registering operators, reusing existing PyTorch operator implementations, batch_norm, custom GPU kernels, or PrivateUse1 operator integration.
+depends_on: []
+---
+
+# Create New Operator Guide
+
+This skill helps users create new PyTorch operators in the torch_supa project. It supports two implementation approaches.
+
+## BR2xx kernel handoff rule
+
+This skill may own torch-supa integration work such as operator selection, `supa_native_functions.yaml`, generated declarations, C++ wrapper/registration glue, tests, and validation. When the selected implementation requires new or modified kernel source, route the kernel campaign through the BR2xx AI operator master before continuing local integration.
+
+Use the available op-master skill named `br200-ai-op-master` when the user says `br2xx-ai-op-master`, `BR2xx op master`, or similar.
+
+Trigger the handoff for:
+
+- Scenario 2 custom kernel work.
+- Any new `.su`, `.cu`, SUTLASS/SUPA, or CUDA-like kernel source.
+- Kernel compile/debug/correctness/performance work discovered while adding the operator.
+- Operator-specific optimization that changes kernel behavior instead of only dispatch or wrapper selection.
+
+Before invoking op-master, output:
+
+```markdown
+BR2xx op-master handoff:
+- source skill: torch-create-new-op
+- task type: write-kernel / debug-kernel / optimize-kernel
+- operator schema and variants:
+- expected semantics/golden reference:
+- inputs/outputs, shapes, strides, dtypes, layouts:
+- target files/symbols:
+- dispatch/wrapper integration point:
+- repro/build/test/perf commands:
+- constraints: minimal operator behavior, target BR2xx architecture, delivery class
+- resume criteria: source artifacts plus correctness gate PASS, perf gate if optimization is requested
+```
+
+After op-master completes, resume this skill by wiring returned kernel artifacts into `torch_supa`, completing registration/codegen/C++ glue, adding or updating tests, and running the requested validation.
+
+## Scenario selection
+
+Before implementation, decide which approach to use:
+
+| Scenario | Description | When to use |
+|------|------|----------|
+| **Reuse a PyTorch operator** | Use an existing PyTorch backend implementation | The operator already has a CPU/CUDA implementation and only needs to be bridged to a PrivateUse1 device |
+| **Add a custom kernel** | Write a GPU kernel implementation | Custom compute logic or operator-specific optimization is needed |
+| **Fuse a Python composite API** | Register a torch-supa custom schema and patch the Python API to call it | The user-facing API is a Python composite such as `torch.nn.functional.normalize`, has no direct ATen schema in `native_functions.yaml`, and needs a fused SUPA implementation |
+
+---
+
+## Scenario 1: Reuse a PyTorch operator implementation
+
+### Overview
+
+When PyTorch already has a CPU/CUDA implementation for the operator, reuse it on the PrivateUse1 device through a bridge.
+
+### Implementation steps
+
+#### Step 1: Register the operator in supa_native_functions.yaml
+
+File path: `torch_supa/csrc/aten/supa_native_functions.yaml`
+
+Add the operator name to the `supported` list:
+
+```yaml
+supported:
+  - _batch_norm_impl_index
+  - _batch_norm_impl_index_backward
+```
+
+> **Note**: The operator name must match the name defined in PyTorch `native_functions.yaml`.
+>
+> **Structured OP note**: If the target operator is a structured op in the PyTorch native definition, usually do not register only the functional variant. First check whether the real structured entry is the `.out` variant.
+>
+> For example, `linalg_vector_norm` delegates to the out variant through `structured_delegate: linalg_vector_norm.out` in the PyTorch native schema, so `supa_native_functions.yaml` should register:
+>
+> ```yaml
+> supported:
+>   - linalg_vector_norm.out
+> ```
+>
+> Instead of only registering:
+>
+> ```yaml
+> supported:
+>   - linalg_vector_norm
+> ```
+>
+> How to decide: inspect PyTorch `native_functions.yaml`. If the functional variant has `structured_delegate: xxx.out` and the `.out` variant is marked `structured: true`, then the real SUPA-side entry that needs `SUPA_IMPL_FUNC(...)` is that `.out` variant.
+
+#### Step 2: Create the operator implementation file
+
+File path: `torch_supa/csrc/aten/ops/<OpName>.cpp`
+
+Implement the static method in `SUPANativeFunctions`:
+
+```cpp
+#include <ATen/ATen.h>
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/TensorUtils.h>
+
+#include <sudnn/sudnn.h>
+
+#include "torch_supa/csrc/aten/core/SUPANativeFunctions.h"
+
+namespace at::supa {
+
+// Select backend (optional)
+enum class OpBackend {
+  Native,   // Use PyTorch native implementation
+  Sudnn,    // Use sudnn implementation
+};
+
+OpBackend _select_backend(const Tensor& input, ...) {
+  // Select an appropriate backend based on input conditions
+  if (meets_sudnn_conditions) {
+    return OpBackend::Sudnn;
+  }
+  return OpBackend::Native;
+}
+
+// Implement forward operator
+std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t>
+SUPANativeFunctions::_batch_norm_impl_index(
+    const Tensor& input,
+    const std::optional<Tensor>& weight_opt,
+    const std::optional<Tensor>& bias_opt,
+    const std::optional<Tensor>& running_mean_opt,
+    const std::optional<Tensor>& running_var_opt,
+    bool training,
+    double momentum,
+    double eps,
+    bool cudnn_enabled) {
+
+  // Process arguments
+  const Tensor& weight = weight_opt.value_or(Tensor());
+  const Tensor& bias = bias_opt.value_or(Tensor());
+  // ...
+
+  // Select backend
+  OpBackend backend = _select_backend(input, weight, bias, ...);
+
+  if (backend == OpBackend::Sudnn) {
+    // Call sudnn implementation
+    return at::cudnn_batch_norm(input_c, weight_c, bias_c, ...);
+  }
+
+  // Call PyTorch native implementation
+  return at::native_batch_norm(input, weight, bias, ...);
+}
+
+// Implement backward operator (if needed)
+std::tuple<Tensor, Tensor, Tensor>
+SUPANativeFunctions::_batch_norm_impl_index_backward(
+    int64_t impl_index,
+    const Tensor& input,
+    const Tensor& grad_output,
+    ...) {
+  // Select the corresponding backend implementation by impl_index
+  if (impl_index == 0) {
+    return at::native_batch_norm_backward(...);
+  } else if (impl_index == 1) {
+    return at::cudnn_batch_norm_backward(...);
+  }
+  TORCH_INTERNAL_ASSERT(false, "Unsupported impl_index");
+}
+
+} // namespace at::supa
+```
+
+### Key points
+
+1. **SUPANativeFunctions / Structured declarations are generated automatically**: Operators registered through yaml automatically generate corresponding header declarations. Regular operators appear in `SUPANativeFunctions.h`; structured ops also generate `structured_<op>` declarations in `torch_supa/csrc/aten/core/SUPAStructuredFunctions.h`, and generated wrappers and dispatch wiring in `torch_supa/csrc/aten/generated/RegisterSUPANative.cpp`.
+2. **Structured OP implementation entry**: For structured ops, implement `SUPA_IMPL_FUNC(op_name)`. The macro expands to `at::supa::structured_<op_name>::impl_supa`. Therefore, this implementation compiles and wires correctly only after codegen has generated the corresponding `structured_<op_name>` declaration.
+3. **Backend selection**: You can design backend selection logic to dynamically choose Native or Sudnn based on input conditions.
+4. **Argument handling**: Use `c10::MaybeOwned<Tensor>` correctly for optional arguments.
+5. **Error handling**: Use `TORCH_CHECK` and `TORCH_INTERNAL_ASSERT`.
+
+### codegen / build chain notes
+
+After modifying `torch_supa/csrc/aten/supa_native_functions.yaml`, rerun the repository's existing codegen flow to refresh generated files. For structured ops, usually check at least:
+
+- `torch_supa/csrc/aten/core/SUPAStructuredFunctions.h`
+- `torch_supa/csrc/aten/generated/RegisterSUPANative.cpp`
+
+If the `.out` structured registration is correct:
+- `SUPAStructuredFunctions.h` automatically contains the `structured_<op>` declaration.
+- `RegisterSUPANative.cpp` automatically contains functional/out wrappers and connects the generated wrapper to your `impl_supa`.
+- After the corresponding `.cpp` implementation file is placed under `torch_supa/csrc/aten/ops/`, the existing CMake `ops/*.cpp` glob automatically includes it in the build.
+
+In other words, the normal structured op flow is:
+1. Register the correct structured entry in `supa_native_functions.yaml` (usually `.out`).
+2. Run codegen and confirm that the `structured_<op>` declaration and wrapper are generated.
+3. Implement `SUPA_IMPL_FUNC(...)` in `torch_supa/csrc/aten/ops/<OpName>.cpp`.
+4. Build the target and confirm linking succeeds.
+
+### Reference example
+
+Full example: commit `d4a7925c4f9b53cce8a7ac166a9d16949d3cfc84`
+
+---
+
+## Scenario 2: Add a custom kernel
+
+### Overview
+
+When custom GPU compute logic is needed, create a kernel file and register/call it from C++.
+
+Before writing or modifying the kernel file, perform the BR2xx kernel handoff rule above. The op-master owns the kernel source campaign and must return source artifacts plus compile/correctness evidence before this skill continues with C++ registration, operator wiring, and tests.
+
+### Implementation steps
+
+#### Step 1: Create the kernel file
+
+File path: `torch_supa/csrc/aten/ops/kernels/<OpName>.su`
+
+```cpp
+#include <ATen/core/Tensor.h>
+#include <ATen/EmptyTensor.h>
+#include <c10/core/TensorOptions.h>
+
+#include <supa_runtime.h>
+
+namespace {
+
+// GPU kernel implementation
+__global__ void add(float *A, float *B, float *C, int N) {
+  int i = threadIdx.x;
+  if (i < N) {
+    C[i] = A[i] + B[i];
+  }
+}
+
+} // anonymous namespace
+
+namespace at::supa {
+
+// Kernel launch wrapper
+supaError_t add_kernel(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+
+  float* self_ptr = self.data_ptr<float>();
+  float* other_ptr = other.data_ptr<float>();
+  float* out_ptr = out.data_ptr<float>();
+  int N = self.numel();
+
+  void* args[] = {
+    const_cast<void*>(static_cast<const void*>(&self_ptr)),
+    const_cast<void*>(static_cast<const void*>(&other_ptr)),
+    const_cast<void*>(static_cast<const void*>(&out_ptr)),
+    const_cast<void*>(static_cast<const void*>(&N))
+  };
+
+  auto err = supaLaunchKernel(add, dim3(1, 1, 1), dim3(N, 1, 1), args, 0, 0);
+  return err;
+}
+
+} // namespace at::supa
+```
+
+#### Step 2: Create the operator registration file
+
+File path: `torch_supa/csrc/aten/ops/<OpName>.cpp`
+
+```cpp
+#include <ATen/core/Tensor.h>
+#include <ATen/EmptyTensor.h>
+#include <ATen/Context.h>
+#include <ATen/ATen.h>
+#include <c10/core/TensorOptions.h>
+
+// register op
+#include <torch/library.h>
+#include <supa_runtime.h>
+
+namespace at::supa {
+
+// Kernel function declaration
+supaError_t add_kernel(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out);
+
+// out variant implementation
+at::Tensor& add_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+  auto err = add_kernel(self, other, alpha, out);
+  if (err != supaSuccess) {
+    TORCH_CHECK(false, supaGetErrorString(err));
+  }
+  return out;
+}
+
+// Main variant implementation
+at::Tensor add(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
+  at::Tensor out = at::empty(self.sizes(), self.options());
+  at::supa::add_out(self, other, alpha, out);
+  return out;
+}
+
+namespace {
+
+// Wrapper function
+at::Tensor wrapper_PrivateUse1_Tensor_add(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
+  return at::supa::add(self, other, alpha);
+}
+
+at::Tensor& wrapper_PrivateUse1_out_add_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+  return at::supa::add_out(self, other, alpha, out);
+}
+
+} // anonymous namespace
+
+// Register to PrivateUse1 device
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+  m.impl("add.Tensor", TORCH_FN(wrapper_PrivateUse1_Tensor_add));
+  m.impl("add.out", TORCH_FN(wrapper_PrivateUse1_out_add_out));
+}
+
+} // namespace at::supa
+```
+
+### Key points
+
+1. **Kernel file suffix**: Use the `.su` suffix; CMake compiles it automatically.
+2. **supaLaunchKernel**: Used to launch GPU kernels.
+3. **TORCH_LIBRARY_IMPL**: Registers the operator to the PrivateUse1 device.
+4. **Naming conventions**:
+   - Kernel function name: `<op>_kernel`
+   - Out variant: `<op>_out`
+   - Wrapper function: `wrapper_PrivateUse1_<variant>_<op>`
+
+### Reference example
+
+Full example: commit `8f31c05d`
+
+---
+
+## Scenario 3: Fuse a Python composite API
+
+### Overview
+
+Use this path when the user-facing PyTorch API is implemented in Python as a composite of multiple ATen ops and does not have a matching schema in PyTorch `native_functions.yaml`, but torch-supa needs a fused SUPA implementation for performance.
+
+Example: `torch.nn.functional.normalize` is a Python composite over norm/clamp/div style ATen ops. There is no `aten::normalize` schema to put in `supported:`, so the torch-supa fused entry should be registered under `custom:` in `torch_supa/csrc/aten/supa_native_functions.yaml`.
+
+Current `normalize_fused` reference locations in this repository:
+
+- Schema: `torch_supa/csrc/aten/supa_native_functions.yaml`
+- C++ wrapper: `torch_supa/csrc/aten/ops/NormalizeFused.cpp`
+- SUPA kernel: `torch_supa/csrc/aten/ops/kernels/NormalizeFused.su`
+- Python API patch: `torch_supa/contrib/module/normalize.py`
+
+Keep new examples in the `torch_supa/` tree. Do not point torch-supa operator examples at `torch_br` paths; `torch_br` may provide the base PyTorch wheel/package in some environments, but fused operator integration files live in `torch_supa`.
+
+### Implementation steps
+
+#### Step 1: Confirm the API is Python composite
+
+Check both the user-facing Python API and ATen schemas:
+
+```bash
+python3 - <<'PY'
+import torch
+import torch.nn.functional as F
+print(hasattr(torch.ops.aten, "normalize"))
+print(F.normalize)
+PY
+```
+
+If there is no `torch.ops.aten.<op>` schema, do not add it to `supported:`. Use `custom:` instead.
+
+#### Step 2: Add a custom schema to supa_native_functions.yaml
+
+File path: `torch_supa/csrc/aten/supa_native_functions.yaml`
+
+```yaml
+custom: # for debug internal api or fused torch api
+  - func: _get_data_ptr(Tensor self) -> int
+  - func: normalize_fused(Tensor input, float eps) -> Tensor
+```
+
+Use a fused/backend-specific name such as `normalize_fused` when the schema is not a real ATen op. This avoids pretending that PyTorch has an `aten::normalize` operator.
+
+#### Step 3: Run codegen and inspect generated registration
+
+Run the repository codegen flow:
+
+```bash
+bash generate_code.sh python3 <torch_version>
+```
+
+For QEMU builds, run this inside QEMU with torch-supa/SUPA env loaded and `TORCH_DEVICE_BACKEND_AUTOLOAD=0`.
+
+The generated schema registration is in the torch-supa generated sources:
+
+- `torch_supa/csrc/aten/CustomRegisterSchema.cpp`
+
+For `normalize_fused`, confirm generated code similar to:
+
+```cpp
+TORCH_LIBRARY(custom, m) {
+  m.def("_get_data_ptr(Tensor self) -> int");
+  m.def("normalize_fused(Tensor input, float eps) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(custom, PrivateUse1, m) {
+  m.impl("_get_data_ptr", TORCH_FN(at::supa::native::wrapper___get_data_ptr));
+  m.impl("normalize_fused", TORCH_FN(at::supa::native::wrapper__normalize_fused));
+}
+```
+
+The generated declaration appears in:
+
+- `torch_supa/csrc/aten/core/SUPANativeFunctions.h`
+
+During a wheel build, generated files are also staged under the build package tree, for example:
+
+- `build/Release/packages/torch_supa/include/torch_supa/csrc/aten/core/SUPANativeFunctions.h`
+- `build/Release/packages/torch_supa/utils/custom_ops.py`
+
+Use those staged files only for inspection/build evidence. Make source edits in the tracked `torch_supa/` files above.
+
+Generated files such as `CustomRegisterSchema.cpp`, `CustomFunctions.*`, `CustomRedispatch.*`, `RegisterSUPA.cpp`, `SUPANativeFunctions.h`, and `torch_supa/utils/custom_ops.py` may be ignored by git in this repository. Do not hand-edit them; update codegen or `supa_native_functions.yaml` and regenerate.
+
+#### Step 4: Implement the SUPANativeFunctions entry
+
+File path: `torch_supa/csrc/aten/ops/<OpName>.cpp`
+
+For the current `normalize_fused` example, the concrete file is `torch_supa/csrc/aten/ops/NormalizeFused.cpp`.
+
+Do not hand-register the schema with `TORCH_LIBRARY_FRAGMENT` or `TORCH_LIBRARY_IMPL`. The generated wrapper calls the `SUPANativeFunctions` method.
+
+Example:
+
+```cpp
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
+#include <c10/core/DeviceType.h>
+
+#include "torch_supa/csrc/aten/core/SUPANativeFunctions.h"
+#include "torch_supa/csrc/profiler/supa_profiler.h"
+
+namespace at::supa {
+
+void normalize_fused_kernel_launch(
+    const float* input,
+    float* output,
+    int rows,
+    int cols,
+    float eps,
+    int block_size);
+
+at::Tensor SUPANativeFunctions::normalize_fused(const at::Tensor& input, double eps) {
+  torch_supa::profiler::SUPARecordFunction recorder;
+  TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1, "normalize_fused expects a SUPA tensor");
+  TORCH_CHECK(input.scalar_type() == at::kFloat, "normalize_fused expects float32 input");
+  TORCH_CHECK(input.dim() >= 1, "normalize_fused expects at least 1D input");
+  TORCH_CHECK(input.is_contiguous(), "normalize_fused expects contiguous input");
+
+  auto cols = static_cast<int>(input.size(input.dim() - 1));
+  auto rows = static_cast<int>(input.numel() / cols);
+  auto output = at::empty_like(input);
+  normalize_fused_kernel_launch(input.data_ptr<float>(), output.data_ptr<float>(), rows, cols, static_cast<float>(eps), 256);
+  return output;
+}
+
+} // namespace at::supa
+```
+
+If the fused implementation needs a new or optimized `.su` kernel, follow the BR2xx kernel handoff rule before changing kernel source.
+
+For the current `normalize_fused` example, the concrete kernel file is `torch_supa/csrc/aten/ops/kernels/NormalizeFused.su`.
+
+#### Step 5: Patch the Python API narrowly
+
+Patch the user-facing Python API only for the supported fused conditions. Fall back to the original PyTorch Python composite for unsupported dtype, layout, dimension, `out=`, non-SUPA tensors, or debugging flags.
+
+Example file:
+
+- `torch_supa/contrib/module/normalize.py`
+
+```python
+import functools
+import os
+
+import torch
+import torch.nn.functional as F
+
+_ORIGINAL_NORMALIZE = F.normalize
+
+
+def _normalize_fused_enabled():
+    return os.getenv("BRTB_ENABLE_NATIVE_OP", "0").lower() not in ("1", "true", "on", "yes")
+
+
+@functools.wraps(_ORIGINAL_NORMALIZE)
+def _normalize_patch(input, p=2.0, dim=1, eps=1e-12, out=None):
+    if (
+        _normalize_fused_enabled()
+        and isinstance(input, torch.Tensor)
+        and input.device.type == "supa"
+        and p == 2.0
+        and dim == -1
+        and out is None
+        and input.dtype == torch.float32
+        and input.is_contiguous()
+    ):
+        return torch.ops.custom.normalize_fused(input, eps)
+    return _ORIGINAL_NORMALIZE(input, p=p, dim=dim, eps=eps, out=out)
+
+
+def _apply_normalize_patch():
+    F.normalize = _normalize_patch
+    torch.normalize = _normalize_patch
+
+
+_apply_normalize_patch()
+```
+
+Follow the existing `torch_supa/contrib/module/flex_attention.py` style: the module should apply its patch when imported. Wire the module through `torch_supa/contrib/module/__init__.py`, and rely on the existing `import torch_supa.contrib.module` during torch-supa initialization to trigger it. Do not separately import `_apply_*` helpers in `torch_supa/__init__.py`, and do not call them from `apply_class_patches()`. Do not place new Python composite API patches under `torch_supa/utils/`; use `torch_supa/contrib/module/` for these public API monkey patches.
+
+Use the existing `BRTB_ENABLE_NATIVE_OP` convention:
+
+- default or `BRTB_ENABLE_NATIVE_OP=false`: use the torch-supa optimized/fused implementation
+- `BRTB_ENABLE_NATIVE_OP=true`: fall back to the PyTorch native/composite implementation
+
+#### Step 6: Write tests against the public API
+
+Tests should call the public API, not `torch.ops.custom.*`, so they exercise the same path users and frameworks use.
+
+Example:
+
+```python
+import pytest
+import torch
+from torch_supa.testing.common_utils import assert_allclose
+
+
+@pytest.mark.parametrize("shape", [(7, 48), (8, 64), (31, 128), (8, 512)])
+def test_normalize_fused(shape):
+    torch.manual_seed(20260604)
+    x_cpu = torch.randn(shape, device="cpu", dtype=torch.float32)
+    x_supa = x_cpu.to("supa").contiguous()
+
+    y_cpu = torch.nn.functional.normalize(x_cpu, p=2.0, dim=-1, eps=1.0e-12)
+    y_supa = torch.normalize(x_supa, p=2.0, dim=-1, eps=1.0e-12)
+
+    assert_allclose(y_cpu, y_supa.cpu(), atol=1.0e-6, rtol=1.0e-5)
+```
+
+Also run the same test with `BRTB_ENABLE_NATIVE_OP=true` to confirm the fallback path still works.
+
+#### Step 7: Validate dispatcher integrity
+
+After moving any hand-written schema to the `custom:` codegen path, run the dangling-impl check:
+
+```bash
+python3 -m pytest -q test/test_dispatch_registration.py
+```
+
+This lightweight test calls `torch._C._dispatch_find_dangling_impls()` after importing `torch_supa`, without depending on the broader native CI runner. It catches torch-supa/ATen cases where an impl is registered without a matching schema; the local test may ignore known external `torchvision::` dangling registrations if they are unrelated to the operator under development. Do not keep duplicate hand-written schema registrations such as `TORCH_LIBRARY_FRAGMENT(aten, m) { m.def("_get_data_ptr(...)"); }` when the schema is already generated from `custom:`.
+
+### Key points
+
+1. **Use `custom:` for Python composite fused APIs**: If the op does not exist in PyTorch `native_functions.yaml`, do not add it to `supported:`.
+2. **Let codegen own schema and impl registration**: Do not add hand-written `TORCH_LIBRARY_FRAGMENT` / `TORCH_LIBRARY_IMPL` for the custom fused op.
+3. **Patch Python APIs narrowly**: Route only supported SUPA cases to the fused custom op; all other calls must preserve PyTorch behavior.
+4. **Use the public API in tests**: `torch.normalize(...)` / `torch.nn.functional.normalize(...)` should be the test surface, not the internal custom op.
+5. **Keep the native fallback switch**: `BRTB_ENABLE_NATIVE_OP=true` should bypass the fused implementation for debugging and compatibility testing.
+
+### Reference example
+
+Full example: commit `4ae2ced`
+
+---
+
+## Writing tests
+
+### Test file path
+
+`test/test_<opname>.py`
+
+### Test template
+
+```python
+import pytest
+import torch
+from torch_supa.testing.common_utils import assert_allclose, create_random_tensor
+
+RTOL = {torch.float32: 5e-5, torch.bfloat16: 0.016}
+ATOL = {torch.float32: 5e-5, torch.bfloat16: 1e-3}
+
+class Test<OpName>:
+
+    @pytest.mark.sanity
+    @pytest.mark.gcuSmoke
+    def test_<op_name>(self):
+        # Set test parameters
+        input_shape = [...]
+        dtype = torch.float32
+
+        # Create test tensors
+        input_cpu, input_supa = create_random_tensor(input_shape, dtype=dtype)
+
+        # CPU computation
+        output_cpu = torch.ops.aten.<op_name>(input_cpu, ...)
+
+        # GPU computation
+        output_supa = torch.ops.aten.<op_name>(input_supa, ...)
+
+        # Validate result
+        assert_allclose(output_cpu, output_supa, atol=ATOL[dtype], rtol=RTOL[dtype])
+```
+
+---
+
+## File structure
+
+File structure after implementing a new operator:
+
+```
+torch_supa/csrc/aten/
+├── supa_native_functions.yaml    # Operator registration (Scenario 1) or custom fused schema (Scenario 3)
+├── core/
+│   └── SUPANativeFunctions.h   # Auto-generated header
+├── CustomRegisterSchema.cpp    # Auto-generated custom schema registration for Scenario 3
+├── RegisterSUPA.cpp            # Auto-generated SUPA dispatch wrappers
+└── ops/
+    ├── <OpName>.cpp            # Operator implementation
+    └── kernels/
+        └── <OpName>.su         # Kernel implementation (Scenario 2)
+
+torch_supa/contrib/module/
+└── <opname>.py                 # Narrow Python API patch for Scenario 3, if needed
+
+test/
+└── test_<opname>.py            # Test file
+```
+
+---
+
+## Best practices
+
+### 1. Choose the implementation approach
+
+- If PyTorch already has the same functionality, prefer Scenario 1 (reuse).
+- If custom compute logic or performance optimization is needed, use Scenario 2 (custom kernel).
+- If the public API is Python composite and has no ATen schema, use Scenario 3 (`custom:` schema plus a narrow Python API patch).
+
+### 2. Code style
+
+- Use the `at::supa` namespace.
+- Follow PyTorch tensor operation conventions.
+- Correctly handle optional arguments and empty tensors.
+
+### 3. Error handling
+
+```cpp
+// Check user input
+TORCH_CHECK(condition, "error message");
+
+// Internal assertion (should not fail)
+TORCH_INTERNAL_ASSERT(condition, "internal error");
+
+// Kernel error handling
+if (err != supaSuccess) {
+  TORCH_CHECK(false, supaGetErrorString(err));
+}
+```
+
+### 4. Test coverage
+
+- Test different data types (float32, bfloat16).
+- Test different input shapes.
+- Test boundary cases (empty tensor, 1D tensor, etc.).
+
+---
+
+## FAQ
+
+### Q1: How do I determine the operator name?
+
+Check `aten/src/ATen/native/native_functions.yaml` in the PyTorch source and find the corresponding operator name.
+
+If the user-facing API is implemented in Python and no matching `torch.ops.aten.<op>` schema exists, do not invent an ATen entry. Register a fused backend schema under `custom:` and patch the Python API as described in Scenario 3.
+
+### Q2: Can Scenario 1 and Scenario 2 be mixed?
+
+Yes. For complex operators, the implementation can choose between native implementation and custom kernel based on conditions.
+
+Scenario 3 can also use a Scenario 2-style `.su` kernel internally, but schema and dispatcher registration must still be generated from `custom:` rather than hand-written with `TORCH_LIBRARY`.
+
+### Q3: How do I inspect existing operator implementations?
+
+Prefer Claude Code tools:
+
+- Use `Read` to read `torch_supa/csrc/aten/supa_native_functions.yaml`.
+- Use `Glob` to find `torch_supa/csrc/aten/ops/*.cpp`.
+- Use `Glob` to find `torch_supa/csrc/aten/ops/kernels/*.su`.
+- For Python composite API patches, inspect `torch_supa/contrib/module/*.py` and `torch_supa/contrib/module/__init__.py`.
+
+---
+
+## Validation checklist
+
+After implementing the operator, check:
+
+- [ ] The operator is registered in `supa_native_functions.yaml` (Scenario 1).
+- [ ] Python composite fused APIs are registered under `custom:` rather than `supported:` (Scenario 3).
+- [ ] The corresponding `.cpp` implementation file is created.
+- [ ] The corresponding `.su` kernel file is created (Scenario 2).
+- [ ] `TORCH_LIBRARY_IMPL` correctly registers the operator (Scenario 2 only).
+- [ ] No duplicate hand-written schema remains when `custom:` codegen owns the schema (Scenario 3).
+- [ ] Python API patches call public APIs in tests and honor `BRTB_ENABLE_NATIVE_OP=true` fallback (Scenario 3).
+- [ ] Test cases are written.
+- [ ] Tests pass.

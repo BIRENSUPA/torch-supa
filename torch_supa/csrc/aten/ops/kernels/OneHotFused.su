@@ -1,0 +1,66 @@
+/* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
+
+#include <supa.h>
+
+#include "torch_supa/csrc/core/supa/SUPAException.h"
+#include "torch_supa/csrc/core/supa/SUPAStream.h"
+
+namespace at::supa {
+namespace {
+
+constexpr int kBlockThreads = 256;
+constexpr int kWarpSize = 32;
+constexpr int kWarpsPerBlock = kBlockThreads / 32;
+constexpr int kMaxGridBlocks = 65536;
+
+__global__ void one_hot_fused_kernel(
+    const int64_t* __restrict__ index,
+    int64_t* __restrict__ output,
+    long long rows,
+    int num_classes) {
+  int lane = threadIdx.x & (warpSize - 1);
+  int warp_in_block = threadIdx.x / warpSize;
+  long long warp_id = (long long)blockIdx.x * kWarpsPerBlock + warp_in_block;
+  long long warps_total = (long long)gridDim.x * kWarpsPerBlock;
+
+  for (long long base = warp_id * warpSize; base < rows; base += warps_total * warpSize) {
+    long long my_row = base + lane;
+    int64_t my_idx = (my_row < rows) ? index[my_row] : -1;
+
+    int active = (int)min((long long)warpSize, rows - base);
+    for (int r = 0; r < active; ++r) {
+      int64_t target = __shfl_sync(0xffffffff, my_idx, r);
+      int64_t* row_out = output + (base + r) * num_classes;
+      for (int c = lane; c < num_classes; c += warpSize) {
+        row_out[c] = (c == target) ? 1 : 0;
+      }
+    }
+  }
+}
+
+} // namespace
+
+void one_hot_fused_kernel_launch(
+    const int64_t* index,
+    int64_t* output,
+    long long rows,
+    int num_classes) {
+  if (rows == 0 || num_classes == 0) {
+    return;
+  }
+  dim3 block(kBlockThreads);
+  long long warps_needed = (rows + kWarpSize - 1) / kWarpSize;
+  long long blocks = (warps_needed + kWarpsPerBlock - 1) / kWarpsPerBlock;
+  if (blocks < 1) {
+    blocks = 1;
+  }
+  if (blocks > kMaxGridBlocks) {
+    blocks = kMaxGridBlocks;
+  }
+  dim3 grid((unsigned int)blocks);
+  one_hot_fused_kernel<<<grid, block, 0, c10::supa::getCurrentSUPAStream()>>>(
+      index, output, rows, num_classes);
+  C10_SUPA_KERNEL_LAUNCH_CHECK();
+}
+
+} // namespace at::supa

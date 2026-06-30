@@ -1,0 +1,38 @@
+# for test
+pytest == 7.0.1
+pytest-pythonpath
+pytest-timestamper <= 0.0.10
+pytest-rerunfailures <= 13.0
+pytest-repeat <= 0.9.4
+numpy <= 1.20.3; python_version <= '3.8'
+numpy == 1.26.4; python_version == '3.10'
+expecttest <= 0.3.0
+cmake >= 3.20.0, <= 3.26.0
+pillow <= 11.2.1
+typeguard <= 2.13.3
+hypothesis <= 6.131.15
+scipy <= 1.15.3
+wget <= 3.2
+plumbum <= 1.9.0
+python-jenkins <= 1.8.2
+opencv-python <= 4.11.0.86
+scp <= 0.15.0
+dohq-artifactory <= 1.0.1
+matplotlib <= 3.10.3
+pandas <= 2.2.3
+junitparser <= 3.2.0
+psutil <= 7.0.0
+decorator <= 5.2.1
+setuptools_scm == 9.2.2
+setuptools == 59.5.0; python_version <= '3.10'
+setuptools == 69.0.0; python_version == '3.12'
+pyyaml >= 5.4, <= 6.0; python_version <= '3.10'
+pyyaml == 6.0.2; python_version == '3.12'
+einops == 0.5.0
+fastcore
+flake8
+black
+sympy
+typing_extensions
+ninja
+timedelta

@@ -1,0 +1,8 @@
+# Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd.
+
+FILE(GLOB _DEBUGGER_SRCS *.cpp)
+
+LIST(APPEND DEBUGGER_SRCS ${_DEBUGGER_SRCS})
+
+# Pass to parent
+set(DEBUGGER_SRCS ${DEBUGGER_SRCS} PARENT_SCOPE)
