@@ -18,7 +18,7 @@
 - 环境详情，例如操作系统、Python 版本、PyTorch 版本、torch-supa 版本、提交 ID、驱动程序/运行时版本和硬件型号
 - 相关代码片段、日志、堆栈跟踪或屏幕截图
 
-对于安全漏洞，请遵循 [Security Policy.md](Security%20Policy.md) 中的报告流程。
+对于安全漏洞，请遵循 [Security_Policy.md](Security_Policy.md) 中的报告流程。
 
 ## 提交代码
 
@@ -65,9 +65,9 @@ git push origin feature/your-feature-name
 
 如果您是以个人身份独立参与本项目贡献（不涉及任何雇主或第三方机构的职务成果），请签署个人贡献者许可协议；若您是代表您所在的雇主、公司、政府机构或其他法律实体进行贡献，或所提交的贡献内容属于您的职务开发成果，则必须签署公司贡献者许可协议。一旦您的 CLA 签署记录存档，您即可正常提交 Pull Request，无需额外操作。如果您的 CLA 尚未签署，项目维护者可能会在审核您的贡献之前要求您先完成签署。
 
-在提交 Pull Request 时，请在 Pull Request 描述中包含一条声明，确认您已阅读并同意 CLA 的条款（例如：“I have signed the CLA and agree to its terms.”）。项目也可能使用自动化机器人来验证 CLA 的签署状态。
+在提交 Pull Request 时，请在 Pull Request 描述中包含一条声明，确认您已阅读并同意 [CLA](https://github.com/BIRENSUPA/torch-supa/cla) 的条款（例如：“I have signed the CLA and agree to its terms.”）。项目也可能使用自动化机器人来验证 CLA 的签署状态。
 
-如果您对 CLA 有任何疑问，请联系 github@birentech.com。
+如果您对 CLA 有任何疑问，请联系 [opensource@birentech.com](mailto:opensource@birentech.com)。
 
 ## 测试要求
 

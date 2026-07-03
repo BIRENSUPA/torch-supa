@@ -18,7 +18,7 @@ When creating a new issue, include as much relevant information as possible:
 - Environment details, such as OS, Python version, PyTorch version, torch-supa version, commit ID, driver/runtime version, and hardware model
 - Relevant code snippets, logs, stack traces, or screenshots
 
-For security vulnerabilities, follow the reporting process in [Security Policy.md](Security%20Policy.md).
+For security vulnerabilities, follow the reporting process in [Security_Policy.md](Security_Policy.md).
 
 ## Submitting Code
 
@@ -57,9 +57,9 @@ This project requires every contributors to sign a Contributor License Agreement
 
 If you are contributing to this project as an individual, independent of any employer or third‑party institutional work (i.e., the contribution is not within the scope of your employment or any other entity), please sign the Individual CLA. If you are contributing on behalf of your employer, company, government agency, or other legal entity, or if the contribution constitutes work made for hire or falls within your job duties, you must sign the Corporate CLA, which must be executed by an authorized representative of your entity with an official seal (or equivalent electronic authentication). Once your CLA is on file, you may submit pull requests without any additional action. If your CLA is not yet signed, the project maintainers may ask you to sign it before reviewing your contribution.
 
-When creating a pull request, please include a statement in the pull request description confirming that you have read and agreed to the CLA (e.g., “I have signed the CLA and agree to its terms.”). The project may also use an automated bot to verify CLA status.
+When creating a pull request, please include a statement in the pull request description confirming that you have read and agreed to the [CLA](https://github.com/BIRENSUPA/torch-supa/cla) (e.g., “I have signed the CLA and agree to its terms.”). The project may also use an automated bot to verify CLA status.
 
-If you have any questions about the CLA, please contact github@birentech.com.
+If you have any questions about the CLA, please contact [opensource@birentech.com](mailto:opensource@birentech.com).
 
 ## Testing Requirements
 

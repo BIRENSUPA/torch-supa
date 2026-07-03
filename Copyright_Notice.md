@@ -8,4 +8,4 @@ This program is free software: you can redistribute it and/or modify it under th
 
 ## Third Party Components
 
-For third-party components, see [Third_Party_Open_Source_Software_Notice.md](THIRD-PARTY-OPEN-SOURCE-SOFTWARE-NOTICES.md).
+For third-party components, see [Third_Party_Open_Source_Software_Notice.md](Third_Party_Open_Source_Software_Notice.md).

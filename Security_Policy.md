@@ -21,7 +21,7 @@ We support the latest maintained releases listed below. Older releases are not b
 Use the reporting channel that best fits the sensitivity of the issue:
 
 - **Public issues, public pull requests, or public discussions**: suitable for non-sensitive security reports, hardening suggestions, documentation issues, or issues that do not expose exploitable details.
-- **Github Private Vulnerability Reporting**: `[Insert your Gitee /security/advisories URL]`
+- **Github Private Vulnerability Reporting**: [torch-supa](https://github.com/BIRENSUPA/torch-supa/issues).
 - **Private email**: [opensource@birentech.com](mailto:opensource@birentech.com) (if private vulnerability reporting is not available)
 
 When reporting, please include as much of the following information as possible:
@@ -115,4 +115,4 @@ These recommendations do not create a duty of care on our part. You are solely r
 
 For security reports, use the private reporting channels above. For non-security questions, use the repository's normal issue or discussion process.
 
-[安全政策-中文版](https://my.feishu.cn/wiki/PHpFwpWAPi22LLk5fY5cG873nQf)
+[安全政策-中文版](Security_Policy.zh.md)

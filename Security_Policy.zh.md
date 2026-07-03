@@ -22,7 +22,7 @@
 
 - **公开问题、公开拉取请求或公开讨论**：适用于非敏感的安全报告、安全加固建议、文档问题或不涉及可利用漏洞细节的问题。
 
-- **GitHub 私有漏洞报告**：`[插入您的 Gitee /security/advisories URL]`
+- **GitHub 私有漏洞报告**：[toch-supa](https://github.com/BIRENSUPA/torch-supa/issues)
 
 - **私有邮箱**：[opensource@birentech.com](mailto:opensource@birentech.com)（如果无法使用私有漏洞报告）
 
