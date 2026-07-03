@@ -58,7 +58,7 @@ size_t parseChosenWorkspaceSize() {
   // properties->minor == 0; const size_t default_size = sm90 ? 4096 * 8 * 1024
   // : 4096 * 1024 * 2 + 16 * 1024 * 8;
 
-  // E01643(TODO): maybe we should get a correct default sublas workspace size?
+  // TODO: maybe we should get a correct default sublas workspace size?
   const size_t default_size = 4096 * 1024 * 2 + 16 * 1024 * 8;
 
   if (val) {

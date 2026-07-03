@@ -93,6 +93,35 @@ static Tensor reshape_indexer(const Tensor& index, int64_t dims_before, int64_t 
   return index.reshape(shape);
 }
 
+static void build_index_op(TensorIteratorBase& iter, const AdvancedIndex& info, const Tensor& result) {
+  // 'TensorIterator' needs to own the things coming from 'info', since
+  // 'info' will be destroyed after the META function.
+  TensorIteratorConfig config;
+  // info.src is a restrided view of result
+  config.set_check_mem_overlap(false).check_all_same_dtype(false).add_output(result).add_owned_const_input(info.src);
+  for (auto& index : info.indices) {
+    config.add_owned_const_input(index);
+  }
+  if (!result.defined()) {
+    config.declare_static_dtype_and_device(info.src.scalar_type(), info.src.device());
+  }
+  iter.build(config);
+}
+
+static void check_indices_on_cpu_or_selfdevice(const Tensor& self, const at::MaterializedIOptTensorListRef& indices) {
+  auto dev = self.device();
+  bool indices_on_cpu_or_dev = std::all_of(indices.begin(), indices.end(), [=](const at::OptionalTensorRef& opt) {
+    return opt.has_value() ? (opt->is_cpu() || opt->device() == dev) : true;
+  });
+  TORCH_CHECK(
+      indices_on_cpu_or_dev,
+      "indices should be either on ",
+      kCPU,
+      " or on the same device as the indexed tensor (",
+      dev,
+      ")");
+}
+
 AdvancedIndex::AdvancedIndex(const Tensor& src, TensorList indices_list) {
   const int64_t element_size_bytes = src.element_size();
   int64_t dims_before = 0;
@@ -249,24 +278,49 @@ TORCH_LIBRARY_IMPL(aten, QuantizedPrivateUse1, m) {
   m.impl("_index_put_impl_", TORCH_FN(quantized_privateuse1_index_put_impl_));
 }
 
-SUPA_IMPL_FUNC(index_Tensor)
-(const Tensor& self, DimVector sizes, DimVector strides, const Tensor& result) {
-  const auto num_indices = sizes.size();
-  if (num_indices >= 2) {
-    std::vector<at::Tensor> indices;
-    indices.reserve(num_indices);
-    for (int i = 2; i < this->ntensors(); ++i) {
-      indices.emplace_back(this->tensor(i));
-    }
-    if (!all_strides_match(indices)) {
-      for (int i = 0; i < num_indices; ++i) {
-        if (!indices[i].is_contiguous()) {
-          indices[i] = indices[i].contiguous();
-          this->_unsafe_set_arg_data(i + 2, indices[i].data_ptr());
-        }
+SUPA_PRECOMPUTE_META_FUNC(index_Tensor)(const Tensor& self, at::IOptTensorListRef indices) {
+  auto materialized = indices.materialize();
+
+  TORCH_CHECK_INDEX(
+      materialized.size() <= (size_t)self.dim(),
+      "too many indices for tensor of dimension ",
+      self.dim(),
+      " (got ",
+      materialized.size(),
+      ")");
+
+  // Only allow: `dev_tensor[{cpu,dev}_tensor]`.
+  // See: https://github.com/pytorch/pytorch/pull/69607
+  check_indices_on_cpu_or_selfdevice(self, materialized);
+
+  const auto& result = maybe_get_output();
+
+  if (result.defined()) {
+    TORCH_CHECK(
+        self.scalar_type() == result.scalar_type(),
+        "index_out: self (",
+        self.scalar_type(),
+        ") and result (",
+        result.scalar_type(),
+        ") must have the same scalar type");
+    at::assert_no_internal_overlap(result);
+    at::assert_no_overlap(result, self);
+    for (const at::OptionalTensorRef& index : materialized) {
+      if (index.has_value()) {
+        at::assert_no_overlap(result, *index);
       }
     }
   }
+
+  auto info = at::native::make_info(self, std::move(indices));
+  build_index_op(*this, info, result);
+  return TORCH_PRECOMPUTE_STRUCT2(index, Tensor)()
+      .set_sizes(std::move(info.indexed_sizes))
+      .set_strides(std::move(info.indexed_strides));
+}
+
+SUPA_IMPL_FUNC(index_Tensor)
+(const Tensor& self, DimVector sizes, DimVector strides, const Tensor& result) {
   index_stub(device_type(), *this, sizes, strides);
 }
 

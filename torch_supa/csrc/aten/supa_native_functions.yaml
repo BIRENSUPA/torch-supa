@@ -52,12 +52,13 @@ supported:
   - _scaled_dot_product_cudnn_attention
   - _scaled_dot_product_cudnn_attention_backward
   - renorm.out
-  - binary_cross_entropy_with_logits
 
 preserve_quantized_dispatch:
   - _index_put_impl_
 
 perf_supported:
+  - binary_cross_entropy_with_logits
+  - cross_entropy_loss
 perf_autograd:
 
 autograd:

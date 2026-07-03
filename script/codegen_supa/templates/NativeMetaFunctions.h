@@ -11,6 +11,9 @@
 ${NativeMetaFunctions_includes}
 
 #define SUPA_IMPL_FUNC(x) void at::supa::structured_##x::impl_supa
+#define SUPA_PRECOMPUTE_META_FUNC(name) \
+  structured_##name::meta_return_ty at::supa::structured_##name::meta
+#define SUPA_META_FUNC(name) void at::supa::structured_##name::meta
 
 namespace at {
 namespace supa {

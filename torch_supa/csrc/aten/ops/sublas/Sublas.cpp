@@ -44,7 +44,7 @@ sublasOperation_t _sublasOpFromChar(char op) {
     case 't':
     case 'T':
       return SUBLAS_OP_T;
-      // E01643: sublas2 does not support this type?
+      // sublas2 does not support this type?
       // case 'c':
       // case 'C':
       //   return SUBLAS_OP_C;
@@ -505,7 +505,7 @@ inline void gemm_internal_sublas_half_helper(SUBLAS_GEMM_ARGTYPES_AND_C_DTYPE(at
   GEMM_CHECK_ARGVALUES(at::Half);
 
   supaDeviceProp* prop = at::supa::getCurrentDeviceProperties();
-  // E01643(TODO): should change based on br200 device properties
+  // TODO: should change based on br200 device properties
   if (prop->major >= 5) {
     // Disallow fp16 reductions that could lead to unexpected overflow issues.
     sublasMath_t sublas_flags = SUBLAS_DEFAULT_MATH;

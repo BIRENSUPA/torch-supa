@@ -67,7 +67,7 @@ git push origin feature/your-feature-name
 
 在提交 Pull Request 时，请在 Pull Request 描述中包含一条声明，确认您已阅读并同意 CLA 的条款（例如：“I have signed the CLA and agree to its terms.”）。项目也可能使用自动化机器人来验证 CLA 的签署状态。
 
-如果您对 CLA 有任何疑问，请联系 [填写项目联系邮箱]。
+如果您对 CLA 有任何疑问，请联系 github@birentech.com。
 
 ## 测试要求
 

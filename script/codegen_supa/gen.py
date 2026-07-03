@@ -1661,6 +1661,10 @@ def gen_source_files(
                 '#include "torch_supa/csrc/aten/common/native.h"',
                 '#include "torch_supa/csrc/utils/EnvConfig.h"',
             ]
+            headers.extend(
+                f"#include <ATen/ops/{op.split('.', 1)[0]}_native.h>"
+                for op in sorted(supa_utils.CustomYamlProcessor.perf_supported_functions)
+            )
             return headers
 
         backend_index = backend_indices[dispatch_key]

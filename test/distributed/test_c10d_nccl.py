@@ -24,7 +24,7 @@ import torch
 import torch.distributed as c10d
 import torch.distributed._functional_collectives as _functional_collectives
 
-# E01643: bccl requires to set topo file path
+# bccl requires to set topo file path
 os.environ["NCCL_TOPO_FILE"] = os.getenv("BIREN_HOME", "/usr/local/birensupa/all/latest") + "/bccl/xml/topo_2c.xml"
 
 if not c10d.is_available() or not c10d.is_nccl_available():

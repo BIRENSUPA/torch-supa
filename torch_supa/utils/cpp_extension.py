@@ -361,6 +361,8 @@ class BuildExtension(build_ext):
                 # Put the original compiler back in place.
                 self.compiler.set_executable("compiler_so", original_compiler)
 
+        default_compiler_name = self.compiler.compiler_cxx[0]
+
         def unix_wrap_ninja_compile(
             sources,
             output_dir=None,
@@ -393,6 +395,8 @@ class BuildExtension(build_ext):
             common_cflags = self.compiler._get_cc_args(pp_opts, debug, extra_preargs)
             extra_cc_cflags = self.compiler.compiler_so[1:]
             with_supa = any(map(_is_brcc_file, sources))
+
+            self.compiler.compiler_cxx[0] = "brcc" if with_supa else default_compiler_name
 
             # extra_postargs can be either:
             # - a dict mapping cxx/brcc to extra flags
@@ -1420,6 +1424,8 @@ def _write_ninja_file(
     if with_supa or supa_dlink_post_cflags:
         brcc = _join_supa_home("brcc", "bin", "brcc")
         config.append(f"brcc = {ccache}{brcc}")
+    else:
+        config.append(f"brcc = {ccache}{compiler}")
 
     flags = [f'cflags = {" ".join(cflags)}']
     flags.append(f'post_cflags = {" ".join(post_cflags)}')
@@ -1447,14 +1453,20 @@ def _write_ninja_file(
         compile_rule.append("  depfile = $out.d")
         compile_rule.append("  deps = gcc")
 
+    brcc_gendeps = "-MMD -MF $out.d"
+
     if with_supa:
         supa_compile_rule = ["rule supa_compile"]
-        supa_compile_rule.append("  command = $brcc $supa_cflags -c $in -o $out $supa_post_cflags")
+        supa_compile_rule.append(f"  command = $brcc {brcc_gendeps} $supa_cflags -c $in -o $out $supa_post_cflags")
+        supa_compile_rule.append("  depfile = $out.d")
+        supa_compile_rule.append("  deps = gcc")
 
     if with_suda:
         suda_compile_rule = ["rule suda_compile"]
         # --generate-dependencies-with-compile is not supported by ROCm
-        suda_compile_rule.append("  command = $brcc $suda_cflags -c $in -o $out $suda_post_cflags")
+        suda_compile_rule.append(f"  command = $brcc {brcc_gendeps} $suda_cflags -c $in -o $out $suda_post_cflags")
+        suda_compile_rule.append("  depfile = $out.d")
+        suda_compile_rule.append("  deps = gcc")
 
     # Emit one build rule per source to enable incremental build.
     build = []
@@ -1508,7 +1520,7 @@ def _write_ninja_file(
                 raise RuntimeError("MSVC is required to load C++ extensions")
             link_rule.append(f'  command = "{cl_path}/link.exe" $in /nologo $ldflags /out:$out')
         else:
-            link_rule.append("  command = $cxx $in $ldflags -o $out")
+            link_rule.append("  command = $brcc $in $ldflags -o $out")
 
         link = [f'build {library_target}: link {" ".join(objects)}']
 

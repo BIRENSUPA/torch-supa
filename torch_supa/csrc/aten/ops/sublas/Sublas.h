@@ -65,7 +65,7 @@ inline void gemm(SUBLAS_GEMM_ARGTYPES_AND_C_DTYPE(Dtype, C_Dtype)) {
   TORCH_CHECK(false, "at::sublas::gemm: not implemented");
 }
 
-// E01643: Currently Sublas only support float, half, bfloat16
+// Currently Sublas only support float, half, bfloat16
 template <>
 void gemm<float>(SUBLAS_GEMM_ARGTYPES(float));
 template <>

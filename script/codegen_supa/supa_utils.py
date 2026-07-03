@@ -111,6 +111,7 @@ class CustomYamlProcessor:
     supported_dispatch_keys = (dispatch_key, autograd_dispatch_key)
     cpp_namespace = "at"
     class_name = "SUPANativeFunctions"
+    perf_supported_functions = set()
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -128,6 +129,8 @@ class CustomYamlProcessor:
         """
 
         self.symint_support_lists = self.content.get("symint", [])
+        self.perf_supported_functions = set(self.content.get("perf_supported") or [])
+        type(self).perf_supported_functions = self.perf_supported_functions
 
         # add supported dispatch key for NativeFunction.from_yaml()
         dispatch_keys.extend(CustomYamlProcessor.supported_dispatch_keys)
@@ -151,6 +154,10 @@ class CustomYamlProcessor:
 
         kernels: Dict[OperatorName, BackendMetadata] = {}
         autograd_kernels: Dict[OperatorName, BackendMetadata] = {}
+        composite_dispatch_keys = (
+            DispatchKey.CompositeExplicitAutograd,
+            DispatchKey.CompositeImplicitAutograd,
+        )
         for k_dict, content, perf, is_autograd in (
             (kernels, self.content["supported"], False, False),
             (autograd_kernels, self.content["autograd"], False, True),
@@ -178,6 +185,14 @@ class CustomYamlProcessor:
                     object.__setattr__(f, "has_symint_implement", support_symint)
                     object.__setattr__(f, "is_custom_supa", False)
                     object.__setattr__(f, "native_metadata", backend_indics[DispatchKey.CUDA].get_kernel(f))
+                    composite_metadata = None
+                    for dispatch_key in composite_dispatch_keys:
+                        backend_index = backend_indics.get(dispatch_key)
+                        if backend_index is not None:
+                            composite_metadata = backend_index.get_kernel(f)
+                            if composite_metadata is not None:
+                                break
+                    object.__setattr__(f, "composite_metadata", composite_metadata)
                     # print(id(f), item)
                     if perf:
                         object.__setattr__(f, "perf", perf)
@@ -326,11 +341,15 @@ class CppImplements:
         """kernel implemented from source file.
         """
         self.supa_structs: Counter = Counter()
+        self.supa_metas: Counter = Counter()
         self.struct_counter: Counter = None
         self.pattern_unstruct_impl = re.compile(r"^[^/]*?SUPANativeFunctions::([\w]+)\([^\)]*\)\s*{", re.MULTILINE)
         self.pattern_supa_struct_impl = re.compile(r"^[^/]*?SUPA_IMPL_FUNC\s*\((\w*)\)", re.MULTILINE)
+        self.pattern_supa_struct_meta = re.compile(
+            r"^[^/]*?SUPA_(?:PRECOMPUTE_)?META_FUNC\s*\((\w*)\)", re.MULTILINE
+        )
 
-    def __get_impl_names(self, file_path: str) -> Tuple[Counter, Counter]:
+    def __get_impl_names(self, file_path: str) -> Tuple[Counter, Counter, Counter]:
         """parse source file and extract valid implement enclosed by macro of TORCH_VER
 
         Args:
@@ -375,8 +394,9 @@ class CppImplements:
         # now, valid_content contains all effective source code. extract useful information..
         kernel_name_counts = Counter(self.pattern_unstruct_impl.findall(valid_content))
         supa_structs = Counter(self.pattern_supa_struct_impl.findall(valid_content))
+        supa_metas = Counter(self.pattern_supa_struct_meta.findall(valid_content))
 
-        return kernel_name_counts, supa_structs
+        return kernel_name_counts, supa_structs, supa_metas
 
     def search_implements(self) -> None:
         """extract implement names from cpp source files.
@@ -387,11 +407,12 @@ class CppImplements:
                 for filename in filenames:
                     if filename.endswith(".cpp") or filename.endswith(".su"):
                         file_path = os.path.join(cur_dir, filename)
-                        unstructured_counts, supa_structured_counts = self.__get_impl_names(
+                        unstructured_counts, supa_structured_counts, supa_meta_counts = self.__get_impl_names(
                             file_path
                         )
                         self.kernel_counter += unstructured_counts
                         self.supa_structs += supa_structured_counts
+                        self.supa_metas += supa_meta_counts
         for k, v in self.supa_structs.items():
             assert v == 1, f"multiple structured implement of '{k}'."
 
@@ -528,7 +549,9 @@ class CppImplements:
         for g in supported_structures:
             kernel_name = NameHelper.structured(g)
             supa_flag = kernel_name in self.supa_structs
+            supa_meta_flag = kernel_name in self.supa_metas
             object.__setattr__(g, "has_supa_structs", supa_flag)
+            object.__setattr__(g, "has_supa_meta", supa_meta_flag)
             if supa_flag:
                 for f in g.functions():
                     if f.structured:

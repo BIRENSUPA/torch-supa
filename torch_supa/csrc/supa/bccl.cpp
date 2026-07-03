@@ -175,7 +175,7 @@ bool bccl_use_nonblocking() {
 static int bccl_nonblocking_timeout() {
   static int timeout = -2; // -2 means not initialized
   if (timeout == -2) {
-    // E01643: use nccl env var first
+    // use nccl env var first
     const auto val = c10::utils::get_env("TORCH_NCCL_NONBLOCKING_TIMEOUT");
     const auto val_b = c10::utils::get_env("TORCH_BCCL_NONBLOCKING_TIMEOUT");
     if (val && !val.value().empty()) {

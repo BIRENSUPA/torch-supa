@@ -4,7 +4,7 @@ import torchgen.api.meta as meta
 import torchgen.api.structured as structured
 from torchgen.api.types import NativeSignature
 
-from torchgen.context import with_native_function_and_index
+from torchgen.context import native_function_manager, with_native_function_and_index
 from torchgen.model import BackendIndex, NativeFunction, NativeFunctionsGroup
 from torchgen.utils import mapMaybe
 from torchgen.dest.native_functions import gen_unstructured
@@ -59,27 +59,49 @@ def gen_supa_structured(f: NativeFunction, backend_index: BackendIndex) -> Optio
         return ""
 
 
+def _supa_structured_parent_class(g: NativeFunctionsGroup) -> str:
+    native_metadata = getattr(g.functional, "native_metadata", None)
+    assert native_metadata is not None, f"Missing native metadata for structured group {g.functional.func}"
+    return f"{native_metadata.cpp_namespace}::structured_{native_metadata.kernel}"
+
+
+def _gen_supa_meta_declarations(g: NativeFunctionsGroup) -> List[str]:
+    args = structured.meta_arguments(g)
+    args_str = ", ".join(a.decl() for a in args)
+
+    if g.out.precomputed:
+        return [f"meta_return_ty meta({args_str});"]
+    else:
+        return [f"void meta({args_str});"]
+
+
 @with_native_function_and_index
 def gen_structured(g: NativeFunctionsGroup, backend_index: BackendIndex) -> List[str]:
     """generate declaration for structured group. adding generating impl_supa()"""
-    meta_name = meta.name(g)
-    out_args = structured.impl_arguments(g)
     metadata = backend_index.get_kernel(g)
     if metadata is None:
         return []
-    prefix = "" if backend_index.external else "TORCH_API "
-    args = f"{', '.join(a.decl() for a in out_args)}"
+    if not getattr(g, "has_supa_structs", False) and not getattr(g, "has_supa_meta", False):
+        return []
 
-    impl = []
-    if g.has_supa_structs:
-        impl.append(f"void impl_supa({args});")
-        native_metadata = getattr(g.functional, "native_metadata", None)
-        parent_class = f"{native_metadata.cpp_namespace}::structured_{native_metadata.kernel}"
+    with native_function_manager(g.out):
+        meta_name = meta.name(g)
+        prefix = "" if backend_index.external else "TORCH_API "
+        parent_class = _supa_structured_parent_class(g)
 
-    return [
-        f"""
+        declarations = []
+        if getattr(g, "has_supa_meta", False):
+            declarations.extend(_gen_supa_meta_declarations(g))
+        if getattr(g, "has_supa_structs", False):
+            out_args = structured.impl_arguments(g)
+            args = f"{', '.join(a.decl() for a in out_args)}"
+            declarations.append(f"void impl_supa({args});")
+
+        body = "\n".join(declarations)
+        return [
+            f"""
 struct {prefix}structured_{meta_name} : public {parent_class} {{
-{''.join(impl)}
+{body}
 }};
 """
-    ]
+        ]

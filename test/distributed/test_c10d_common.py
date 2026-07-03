@@ -1828,7 +1828,7 @@ class ProcessGroupWithDispatchedCollectivesTests(MultiProcessTestCase):
             dist.destroy_process_group()
 
     def test_init_process_group_for_all_backends(self):
-        # E01643: now just modify the test since we use custom processgroup, not nccl
+        # now just modify the test since we use custom processgroup, not nccl
         backend = dist.Backend.NCCL
         excepted_backend = "custom"
 

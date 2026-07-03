@@ -12,15 +12,15 @@ torch.linalg
      - 限制
    * - ``torch.linalg.norm``
      - 是
-     -
+     - 仅支持FLOAT16和BFLOAT16
    * - ``torch.linalg.vector_norm``
      - 是
-     -
+     - 仅支持FLOAT16和BFLOAT16
    * - ``torch.linalg.matrix_norm``
      - 是
-     -
+     - 仅支持FLOAT16和BFLOAT16
    * - ``torch.linalg.diagonal``
-     - 否
+     - 是
      -
    * - ``torch.linalg.det``
      - 否
@@ -89,17 +89,17 @@ torch.linalg
      - 否
      -
    * - ``torch.linalg.cross``
-     - 否
+     - 是
      -
    * - ``torch.linalg.matmul``
      - 否
      -
    * - ``torch.linalg.vecdot``
-     - 否
-     -
+     - 是
+     - 仅支持FLOAT32
    * - ``torch.linalg.multi_dot``
-     - 否
-     -
+     - 是
+     - 仅支持FLOAT32、FLOAT16和BFLOAT16
    * - ``torch.linalg.householder_product``
      - 否
      -
@@ -110,7 +110,7 @@ torch.linalg
      - 否
      -
    * - ``torch.linalg.vander``
-     - 否
+     - 是
      -
    * - ``torch.linalg.cholesky_ex``
      - 否

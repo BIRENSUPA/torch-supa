@@ -15,12 +15,18 @@ namespace utils {
 namespace EnvConfig {
 
 static inline bool GetEnvBool(const char* env_name, bool default_value = false) {
-  // return false when empty or is '0'
+  // Treat common textual false values as false. Perf/native-op switches are
+  // often exported as "true"/"false" by test harnesses, not only "1"/"0".
   auto* env = std::getenv(env_name);
   if (!env || env[0] == '\0') {
     return default_value;
   }
-  return ((env[0] != '0' || env[1] != '\0'));
+  if (std::strcmp(env, "0") == 0 || std::strcmp(env, "false") == 0 || std::strcmp(env, "False") == 0 ||
+      std::strcmp(env, "FALSE") == 0 || std::strcmp(env, "off") == 0 || std::strcmp(env, "Off") == 0 ||
+      std::strcmp(env, "OFF") == 0) {
+    return false;
+  }
+  return true;
 }
 
 static inline int GetEnvInt(const char* env_name, int default_value = 0) {

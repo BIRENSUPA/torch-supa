@@ -146,7 +146,7 @@ bool check_flash_attention_hardware_support(sdp_params const& params, bool debug
 
 bool check_mem_efficient_hardware_support(sdp_params const& params, bool debug) {
   // Mem Efficient attention supports hardware in the range [sm_50, sm_90]
-  // E01643: currently mem_efficient just use flash_attn, which may mismatch
+  // currently mem_efficient just use flash_attn, which may mismatch
   return false;
 }
 

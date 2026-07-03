@@ -361,12 +361,22 @@ return {sig.name()}({', '.join(e.expr for e in translate(cpp_sig.arguments(), si
                 supa_calling = f"return {impl_name}({args_exprs_str});"
 
                 native_metadata = getattr(f, "native_metadata", None)
+                composite_metadata = getattr(f, "composite_metadata", None)
                 fmt = "if (torch_supa::utils::EnvConfig::IsEnableNativeOP()) {{\n   {}\n}} else {{\n   {}\n}}"
-                if getattr(f, "perf", False) and native_metadata is not None:
-                    if not native_metadata.structured:
+                if getattr(f, "perf", False):
+                    # Native-op fallback should prefer explicit dispatch entries.
+                    # CUDA/backend metadata names a concrete backend kernel.  If
+                    # it is absent, use CompositeImplicit/ExplicitAutograd's
+                    # declared native kernel before falling back to the cpp-name
+                    # convention, because schema-derived names are only a guess.
+                    if native_metadata is not None and not native_metadata.structured:
                         native_impl_name = f"{native_metadata.cpp_namespace}::{native_metadata.kernel}"
-                        native_calling = f"return {native_impl_name}({args_exprs_str});"
-                        supa_calling = fmt.format(supa_calling, native_calling)
+                    elif composite_metadata is not None and not composite_metadata.structured:
+                        native_impl_name = f"{composite_metadata.cpp_namespace}::{composite_metadata.kernel}"
+                    else:
+                        native_impl_name = f"at::native::{cpp.name(f.func, symint_overload=f.func.has_symint())}"
+                    native_calling = f"return {native_impl_name}({args_exprs_str});"
+                    supa_calling = fmt.format(native_calling, supa_calling)
 
                 result = f"{supa_calling}\n"
                 return f"""\
@@ -752,7 +762,7 @@ return {sig.name()}({', '.join(e.expr for e in translate(cpp_sig.arguments(), si
                     fmt = "if (torch_supa::utils::EnvConfig::IsEnableNativeOP()) {{\n   {}\n  }} else {{\n   {}\n  }}"
                     if getattr(f, "perf", False):
                         native_calling = f"""op.impl({impl_exprs});"""
-                        supa_calling = fmt.format(supa_calling, native_calling)
+                        supa_calling = fmt.format(native_calling, supa_calling)
                     sig_body.append(supa_calling)
 
                 sig_body.append("}" * enclosure)

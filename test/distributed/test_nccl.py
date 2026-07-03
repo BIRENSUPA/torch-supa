@@ -55,10 +55,10 @@ broadcast_dtypes = (
     else [torch.float8_e4m3fn, torch.float8_e5m2]
 )
 
-# E01643: bccl requires to set topo file path
+# bccl requires to set topo file path
 os.environ["NCCL_TOPO_FILE"] = os.getenv("BIREN_HOME", "/usr/local/birensupa/all/latest") + "/bccl/xml/topo_2c.xml"
 
-@pytest.mark.skip(reason="E01643: random mistmatch? but print result is the same")
+@pytest.mark.skip(reason="random mistmatch? but print result is the same")
 class TestNCCL(TestCase):
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
     @pytest.mark.sanity

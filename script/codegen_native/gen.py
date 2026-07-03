@@ -125,7 +125,7 @@ def transform_cuda_to_privateuse1(files, dst_path, skip_quantized_registration_o
                         new_lines.append(line)
                 # replace definitions
                 else:
-                    # E01643: api name change in the future
+                    # api name change in the future
                     # if "at::native" in line:
                     #     if "return" in line or "struct" in line:
                     #         line = line.replace("at::native", "at::supa::native")
@@ -367,7 +367,7 @@ def main():
     register_files = [os.path.join(BASE_DIR, rel_path) for rel_path in register_files]
     register_dst_dir = os.path.join(BASE_DIR, "torch_supa/csrc/aten/generated")
 
-    # E01643: currently do not change the api name
+    # currently do not change the api name
     # transform_native_functions(native_functions, dst)
     # transform_native_meta_functions(native_meta_functions, dst)
     br_src = os.path.join(BASE_DIR, "torch_supa/csrc/aten/supa_native_functions.yaml")

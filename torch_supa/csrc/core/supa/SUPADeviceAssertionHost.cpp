@@ -51,7 +51,7 @@ int dsa_get_device_id() {
 /// We need our own implementation of this function to prevent
 /// an infinite initialization loop for SUPAKernelLaunchRegistry
 int dsa_get_device_compute_capability(const int device_num) {
-  // E01643: simulate h100 for supa device, we could not get correct attribute from supa api
+  // simulate h100 for supa device, we could not get correct attribute from supa api
   int compute_capability = 9;
   return compute_capability;
 }

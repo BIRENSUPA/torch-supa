@@ -14,7 +14,7 @@
 
 namespace torch_supa::supa {
 
-// E01643: cannot include combined_traceback.h so this function should not be used when torch < 2.3
+// cannot include combined_traceback.h so this function should not be used when torch < 2.3
 #if TORCH_VER >= TORCH_2_2_0
 using c10::Dict;
 using c10::IValue;

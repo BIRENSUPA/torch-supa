@@ -59,7 +59,7 @@ If you are contributing to this project as an individual, independent of any emp
 
 When creating a pull request, please include a statement in the pull request description confirming that you have read and agreed to the CLA (e.g., “I have signed the CLA and agree to its terms.”). The project may also use an automated bot to verify CLA status.
 
-If you have any questions about the CLA, please contact [填写项目联系邮箱].
+If you have any questions about the CLA, please contact github@birentech.com.
 
 ## Testing Requirements
 

@@ -887,11 +887,13 @@ void gpu_kernel_impl(TensorIteratorBase& iter, const func_t& f, int tuned_elems_
     if constexpr (traits::arity == 2 && (std::is_same<arg0_t, c10::BFloat16>::value || std::is_same<arg0_t, float>::value)) {
       if (try_launch_static_contiguous_unrolled_kernel<func_t, c10::BFloat16, float, float>(
               iter, f, data, numel, dtypes) ||
+          try_launch_static_contiguous_unrolled_kernel<func_t, c10::BFloat16, float, c10::BFloat16>(
+              iter, f, data, numel, dtypes) ||
           try_launch_static_contiguous_unrolled_kernel<func_t, float, c10::BFloat16, float>(
               iter, f, data, numel, dtypes) ||
-          try_launch_static_binary_kernel<func_t, c10::BFloat16, double, c10::BFloat16>(
+          try_launch_static_contiguous_unrolled_kernel<func_t, c10::BFloat16, double, c10::BFloat16>(
               iter, f, data, numel, dtypes) ||
-          try_launch_static_binary_kernel<func_t, float, double, float>(
+          try_launch_static_contiguous_unrolled_kernel<func_t, float, double, float>(
               iter, f, data, numel, dtypes)) {
         return;
       }
@@ -913,6 +915,8 @@ void gpu_kernel_impl(TensorIteratorBase& iter, const func_t& f, int tuned_elems_
     if constexpr (traits::arity == 2 && (std::is_same<arg0_t, c10::BFloat16>::value || std::is_same<arg0_t, float>::value)) {
       if (try_launch_static_binary_kernel<func_t, c10::BFloat16, float, float>(
               iter, f, data, numel, dtypes) || 
+          try_launch_static_binary_kernel<func_t, c10::BFloat16, float, c10::BFloat16>(
+              iter, f, data, numel, dtypes) ||
           try_launch_static_binary_kernel<func_t, float, c10::BFloat16, float>(
               iter, f, data, numel, dtypes) ||
           try_launch_static_binary_kernel<func_t, c10::BFloat16, double, c10::BFloat16>(
