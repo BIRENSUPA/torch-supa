@@ -31,6 +31,27 @@ def run_cmd(cmd: list[str]) -> None:
         sys.exit(1)
 
 
+def resolve_autograd_codegen() -> tuple[str, str, str, dict[str, str]]:
+    torchgen_root = get_torchgen_root()
+    packaged_tags_yaml = os.path.join(
+        torchgen_root, "packaged/ATen/native/tags.yaml"
+    )
+    packaged_autograd_dir = os.path.join(torchgen_root, "packaged/autograd")
+    if not os.path.exists(packaged_tags_yaml) or not os.path.exists(
+        os.path.join(packaged_autograd_dir, "gen_autograd.py")
+    ):
+        raise RuntimeError(
+            "failed to find autograd codegen resources from installed torchgen package"
+        )
+
+    return (
+        "torchgen.packaged.autograd.gen_autograd",
+        packaged_tags_yaml,
+        packaged_autograd_dir,
+        os.environ.copy(),
+    )
+
+
 def process_includes(content: str, header_map: dict) -> str:
     lines = content.splitlines(keepends=True)
     result = []
@@ -159,7 +180,6 @@ def transform_cuda_to_privateuse1(files, dst_path, skip_quantized_registration_o
                 new_lines = strip_quantized_registration_blocks(
                     new_lines, skip_quantized_registration_ops
                 )
-
             file = Path(dst)
             old_contents: str | None = None
             try:
@@ -169,6 +189,213 @@ def transform_cuda_to_privateuse1(files, dst_path, skip_quantized_registration_o
             if "".join(new_lines) != old_contents:
                 with open(dst, "w", encoding="utf-8") as f:
                     f.writelines(new_lines)
+
+
+_AUTOGRAD_FOOTER = """
+} // namespace
+} // namespace VariableType
+
+namespace {
+
+{registrations}
+
+} // namespace
+} // namespace torch::autograd
+"""
+
+
+_AUTOGRAD_UNPACK_HELPERS = """
+namespace {
+const Variable& checked_cast_variable(
+    const Tensor& t,
+    const char* name,
+    int pos) {
+  if (!t.defined()) {
+    TORCH_CHECK(
+        false,
+        "Expected a proper Tensor but got None (or an undefined Tensor in C++) ",
+        "for argument #",
+        pos,
+        " '",
+        name,
+        "'");
+  }
+  return t;
+}
+
+Variable& checked_cast_variable(Tensor& t, const char* name, int pos) {
+  if (!t.defined()) {
+    TORCH_CHECK(
+        false,
+        "Expected a proper Tensor but got None (or an undefined Tensor in C++) ",
+        "for argument #",
+        pos,
+        " '",
+        name,
+        "'");
+  }
+  return t;
+}
+
+const Tensor& unpack(const Tensor& t, const char* name, int pos) {
+  return checked_cast_variable(t, name, pos);
+}
+
+Tensor& unpack(Tensor& t, const char* name, int pos) {
+  return checked_cast_variable(t, name, pos);
+}
+
+Tensor unpack_opt(const Tensor& t, const char* name, int pos) {
+  if (!t.defined()) {
+    return Tensor();
+  }
+  return unpack(t, name, pos);
+}
+
+std::vector<at::Tensor> unpack(
+    const at::ITensorListRef& tl,
+    const char* name,
+    int pos) {
+  std::vector<at::Tensor> ret;
+  ret.reserve(tl.size());
+  for (const auto& t : tl) {
+    ret.push_back(t);
+  }
+  return ret;
+}
+} // namespace
+
+"""
+
+
+def run_autograd_codegen(native_yaml: str, generated_dir: str) -> None:
+    module, tags_yaml, autograd_dir, env = resolve_autograd_codegen()
+    print(
+        "Running:",
+        [
+            sys.executable,
+            "-m",
+            module,
+            native_yaml,
+            tags_yaml,
+            generated_dir,
+            autograd_dir,
+        ],
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            module,
+            native_yaml,
+            tags_yaml,
+            generated_dir,
+            autograd_dir,
+        ],
+        capture_output=True,
+        env=env,
+    )
+    stdout, stderr = (
+        result.stdout.decode("utf-8").strip(),
+        result.stderr.decode("utf-8").strip(),
+    )
+    if result.returncode != 0:
+        print("Failed to run autograd codegen")
+        print(stdout, stderr)
+        sys.exit(1)
+
+
+def _extract_balanced_block(text: str, start: int) -> tuple[str, int]:
+    open_brace = text.find("{", start)
+    if open_brace < 0:
+        raise RuntimeError("failed to find block opening brace")
+    depth = 0
+    for idx in range(open_brace, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                while end < len(text) and text[end] in " \t\r\n;":
+                    end += 1
+                return text[start:end], end
+    raise RuntimeError("failed to find block closing brace")
+
+
+def _extract_function(text: str, name: str) -> str:
+    match = re.search(rf"\n[^\n]*\b{re.escape(name)}\s*\(", text)
+    if match is None:
+        raise RuntimeError(f"failed to find generated autograd wrapper {name}")
+    start = match.start() + 1
+    block, _ = _extract_balanced_block(text, start)
+    return block.strip() + "\n"
+
+
+def _find_variable_type_helpers(text: str) -> re.Match[str]:
+    match = re.search(r"namespace\s+VariableType\s*\{\s*(namespace\s*\{)", text)
+    if match is None:
+        raise RuntimeError("failed to find VariableType helper namespace")
+    return match
+
+
+def _extract_variable_type_prologue(text: str) -> str:
+    match = _find_variable_type_helpers(text)
+    return text[: match.start(1)].rstrip() + "\n"
+
+
+def _extract_variable_type_helpers(text: str) -> str:
+    match = _find_variable_type_helpers(text)
+    block, _ = _extract_balanced_block(text, match.start(1))
+    return block.strip() + "\n\n"
+
+
+def transform_autograd_cuda_to_privateuse1(files: list[str], dst_path: str) -> None:
+    os.makedirs(dst_path, exist_ok=True)
+    for src in files:
+        if not os.path.exists(src):
+            continue
+        text = Path(src).read_text(encoding="utf-8")
+        reg_match = re.search(
+            r"TORCH_LIBRARY_IMPL\(aten, AutogradCUDA, m\) \{.*?\n\}", text, re.S
+        )
+        if reg_match is None:
+            continue
+        registration = reg_match.group(0)
+        wrapper_names = re.findall(r"VariableType::([A-Za-z0-9_]+_AutogradCUDA)", registration)
+        if not wrapper_names:
+            continue
+
+        prologue = _extract_variable_type_prologue(text)
+        helpers = _extract_variable_type_helpers(text)
+        functions = []
+        seen = set()
+        for name in wrapper_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            privateuse1_name = name.replace("AutogradCUDA", "AutogradPrivateUse1")
+            functions.append(_extract_function(text, name).replace(name, privateuse1_name))
+
+        registration = registration.replace("AutogradCUDA", "AutogradPrivateUse1")
+        content = (
+            prologue
+            + helpers
+            + _AUTOGRAD_UNPACK_HELPERS
+            + "namespace {\n\n"
+            + "\n".join(functions)
+            + _AUTOGRAD_FOOTER.replace("{registrations}", registration)
+        )
+        filename = os.path.basename(src).replace("VariableType_", "RegisterAutogradSUPANative_")
+        dst = Path(dst_path) / filename
+        old_contents: str | None = None
+        try:
+            old_contents = dst.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        if content != old_contents:
+            dst.write_text(content, encoding="utf-8")
 
 
 def transform_native_functions(src, dst_path):
@@ -318,6 +545,9 @@ def main():
     generated_dir = os.path.join(BASE_DIR, "build/aten/generated")
     if os.path.exists(generated_dir):
         shutil.rmtree(generated_dir)
+    autograd_generated_dir = os.path.join(BASE_DIR, "build/aten/autograd_generated")
+    if os.path.exists(autograd_generated_dir):
+        shutil.rmtree(autograd_generated_dir)
 
     shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
     transform_native_yaml(
@@ -379,6 +609,12 @@ def main():
     transform_cuda_to_privateuse1(
         register_files, register_dst_dir, skip_quantized_registration_ops
     )
+
+    run_autograd_codegen(native_yaml, autograd_generated_dir)
+    autograd_register_files = [
+        str(path) for path in sorted(Path(autograd_generated_dir).glob("VariableType_*.cpp"))
+    ]
+    transform_autograd_cuda_to_privateuse1(autograd_register_files, register_dst_dir)
 
     # generate torch version file
     TorchVersions.init(torch_version)

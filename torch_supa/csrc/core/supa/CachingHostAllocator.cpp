@@ -12,9 +12,9 @@
 
 #include <c10/core/thread_pool.h>
 #include <c10/util/flat_hash_map.h>
+#include <c10/util/llvmMathExtras.h>
 #include <supa_runtime.h>
 
-#include "torch_supa/csrc/core/supa/BaseUtils.h"
 #include "torch_supa/csrc/core/supa/CachingHostAllocator.h"
 #include "torch_supa/csrc/core/supa/SUPAAllocatorConfig.h"
 #include "torch_supa/csrc/core/supa/SUPACachingAllocator.h"
@@ -148,7 +148,7 @@ class SUPAHostAllocator {
     }
 
     // Round up the allocation to the nearest power of two to improve reuse.
-    size_t roundSize = c10::supa::PowerOf2Ceil(size);
+    size_t roundSize = llvm::PowerOf2Ceil(size);
     void* ptr = nullptr;
     if (c10::supa::SUPACachingAllocator::SUPAAllocatorConfig::pinned_use_supa_host_register()) {
       allocWithSupaHostRegister(&ptr, roundSize);

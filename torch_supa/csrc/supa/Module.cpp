@@ -1,7 +1,9 @@
 /* Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd. */
 
+#include <algorithm>
 #include <chrono>
 #include <future>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -19,6 +21,7 @@
 #include "torch_supa/csrc/core/supa/SUPAContext.h"
 #include "torch_supa/csrc/core/supa/SUPAFunctions.h"
 #include "torch_supa/csrc/core/supa/SUPAGraphsUtils.h"
+#include "torch_supa/csrc/core/supa/SUPAGuard.h"
 #include "torch_supa/csrc/core/supa/SUPAStream.h"
 #include "torch_supa/csrc/core/supa/SublasContext.h"
 #include "torch_supa/csrc/core/supa/TorchVersion.h"
@@ -26,6 +29,7 @@
 #include "torch_supa/csrc/supa/Module.h"
 #include "torch_supa/csrc/supa/SUPAPluggableAllocator.h"
 #include "torch_supa/csrc/supa/memory_snapshot.h"
+#include "torch_supa/csrc/supa/utils.h"
 #include "torch_supa/csrc/utils/LazyInit.h"
 
 #ifdef USE_BCCL
@@ -39,21 +43,361 @@
 #include <ATen/ATen.h>
 #include <ATen/CachedTensorUtils.h>
 #include <ATen/Context.h>
+#include <ATen/WrapDimUtils.h>
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/Generator.h>
 #include <torch/csrc/THP.h>
 #include <torch/csrc/autograd/generated/VariableType.h>
 #include <torch/csrc/autograd/generated/variable_factories.h>
 #include <torch/csrc/autograd/utils/wrap_outputs.h>
+#include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/pycfunction_helpers.h>
 #include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/csrc/utils/python_numbers.h>
 #include <torch/csrc/utils/python_strings.h>
+#include <torch/csrc/utils/tensor_flatten.h>
 #include "torch_supa/csrc/core/supa/SUPAVersion.h"
 
 static bool in_bad_fork = false; // True for children forked after xpu init
+
+namespace {
+
+struct SupaGatherInfo {
+  std::vector<int64_t> expected_size;
+  int64_t dim;
+};
+
+using tensor_list2d = std::vector<std::vector<at::Tensor>>;
+
+struct UniqueTypeChecker {
+  void show(size_t type_id) {
+    if (!unique) {
+      return;
+    }
+    if (!type_id_) {
+      type_id_ = type_id;
+    }
+    unique = type_id_.value() == type_id;
+  }
+
+  std::optional<size_t> type_id_;
+  bool unique = true;
+};
+
+at::Device supa_device_from_index(int64_t device) {
+  TORCH_CHECK(device >= 0, "Expected non-negative device index, but got ", device);
+  return at::Device(c10::DeviceType::PrivateUse1, static_cast<c10::DeviceIndex>(device));
+}
+
+std::vector<at::Tensor>& supa_broadcast_out(const at::Tensor& tensor, std::vector<at::Tensor>& out_tensors) {
+  for (const auto i : c10::irange(out_tensors.size())) {
+    TORCH_CHECK(
+        out_tensors[i].device().type() == c10::DeviceType::PrivateUse1,
+        "Expected all output tensors to be SUPA tensors, but output tensor at index ",
+        i,
+        " has device '",
+        out_tensors[i].device(),
+        "'");
+    TORCH_CHECK(
+        out_tensors[i].sizes() == tensor.sizes(),
+        "Expected all output tensors to have same shape as the source tensor ",
+        tensor.sizes(),
+        ", but output tensor at index ",
+        i,
+        " has shape ",
+        out_tensors[i].sizes());
+  }
+
+  for (auto& out_tensor : out_tensors) {
+    out_tensor.copy_(tensor, /*non_blocking=*/true);
+  }
+  return out_tensors;
+}
+
+std::vector<at::Tensor> supa_broadcast(const at::Tensor& tensor, at::IntArrayRef devices) {
+  std::vector<at::Tensor> diff_device_dst_tensors;
+  diff_device_dst_tensors.reserve(devices.size());
+  for (auto device : devices) {
+    auto target_device = supa_device_from_index(device);
+    if (tensor.device() != target_device) {
+      diff_device_dst_tensors.emplace_back(
+          at::empty(tensor.sizes(), tensor.options().device(target_device), tensor.suggest_memory_format()));
+    }
+  }
+  supa_broadcast_out(tensor, diff_device_dst_tensors);
+
+  std::vector<at::Tensor> dst_tensors;
+  dst_tensors.reserve(devices.size());
+  auto it = diff_device_dst_tensors.begin();
+  for (auto device : devices) {
+    auto target_device = supa_device_from_index(device);
+    if (tensor.device() != target_device) {
+      dst_tensors.emplace_back(*it++);
+    } else {
+      dst_tensors.emplace_back(tensor);
+    }
+  }
+  TORCH_INTERNAL_ASSERT(it == diff_device_dst_tensors.end());
+  return dst_tensors;
+}
+
+tensor_list2d supa_broadcast_coalesced(at::TensorList tensors, at::IntArrayRef devices, size_t buffer_size) {
+  TORCH_CHECK(!devices.empty(), "Expected at least one device to broadcast to");
+  TORCH_CHECK(
+      std::all_of(
+          tensors.begin(),
+          tensors.end(),
+          [&](const at::Tensor& t) { return t.device() == supa_device_from_index(devices[0]); }),
+      "All tensors must be on devices[0]: ",
+      devices[0]);
+
+  tensor_list2d outputs(devices.size());
+  outputs[0] = tensors.vec();
+  for (auto& output : outputs) {
+    output.reserve(tensors.size());
+  }
+
+  UniqueTypeChecker type_checker;
+  c10::supa::SUPAGuard device_guard(static_cast<c10::DeviceIndex>(devices[0]));
+  for (auto& chunk : torch::utils::take_tensors(tensors, buffer_size)) {
+    type_checker.show(chunk.type_id());
+    if (chunk.options().is_sparse()) {
+      auto flat_tuple = torch::utils::flatten_sparse_tensors(chunk.tensors);
+      auto broadcast_indices = supa_broadcast(flat_tuple.first, devices);
+      auto broadcast_values = supa_broadcast(flat_tuple.second, devices);
+      for (size_t i = 1, num_devices = devices.size(); i < num_devices; ++i) {
+        device_guard.set_index(static_cast<c10::DeviceIndex>(devices[i]));
+        auto& device_outputs = outputs[i];
+        auto& inds = broadcast_indices[i];
+        auto& vals = broadcast_values[i];
+        for (const auto& var : torch::utils::unflatten_sparse_tensors(inds, vals, chunk.tensors)) {
+          device_outputs.emplace_back(torch::autograd::make_variable(var.tensor_data(), false));
+        }
+      }
+    } else {
+      auto results = supa_broadcast(torch::utils::flatten_dense_tensors(chunk.tensors), devices);
+      for (size_t i = 1, num_devices = devices.size(); i < num_devices; ++i) {
+        device_guard.set_index(static_cast<c10::DeviceIndex>(devices[i]));
+        auto& device_outputs = outputs[i];
+        for (auto& var : torch::utils::unflatten_dense_tensors(results[i], chunk.tensors)) {
+          device_outputs.emplace_back(torch::autograd::make_variable(var.tensor_data(), false));
+        }
+      }
+    }
+  }
+
+  if (!type_checker.unique) {
+    for (auto& output : outputs) {
+      torch::utils::reorder_tensors_like(output, tensors);
+    }
+  }
+  return outputs;
+}
+
+std::vector<at::Tensor> supa_scatter(
+    const at::Tensor& tensor,
+    at::IntArrayRef devices,
+    const std::optional<std::vector<int64_t>>& chunk_sizes,
+    int64_t dim,
+    const std::optional<std::vector<std::optional<c10::supa::SUPAStream>>>& streams) {
+  TORCH_CHECK(!devices.empty(), "Expected at least one device to scatter to");
+  if (chunk_sizes.has_value()) {
+    TORCH_CHECK(
+        chunk_sizes->size() == devices.size(),
+        "Expected devices and chunk_sizes to be of same length, but got "
+        "len(devices) = ",
+        devices.size(),
+        " and len(chunk_sizes) = ",
+        chunk_sizes->size());
+  }
+
+  dim = at::maybe_wrap_dim(dim, tensor);
+  std::vector<at::Tensor> chunks = chunk_sizes
+      ? tensor.split_with_sizes(/*split_sizes=*/*chunk_sizes, /*dim=*/dim)
+      : tensor.chunk(/*chunks=*/static_cast<int64_t>(devices.size()), /*dim=*/dim);
+
+  c10::supa::OptionalSUPAStreamGuard supa_guard;
+  for (const auto i : c10::irange(chunks.size())) {
+    auto target_device = supa_device_from_index(devices[i]);
+    if (chunks[i].device() != target_device) {
+      if (i < (streams ? streams->size() : 0U) && (*streams)[i]) {
+        TORCH_CHECK(
+            (*streams)[i]->device_index() == target_device.index(),
+            "Expected the device associated with the stream at index ",
+            i,
+            " (was ",
+            (*streams)[i]->device_index(),
+            ") to match the device supplied at that index (expected ",
+            target_device.index(),
+            ")");
+        supa_guard.reset_stream((*streams)[i]->unwrap());
+      }
+      chunks[i] = chunks[i].to(
+          target_device,
+          /*non_blocking=*/true,
+          /*copy=*/false,
+          /*memory_format=*/at::MemoryFormat::Preserve);
+    }
+  }
+  return chunks;
+}
+
+std::vector<at::Tensor> supa_scatter_out(
+    const at::Tensor& tensor,
+    std::vector<at::Tensor>& out_tensors,
+    int64_t dim,
+    const std::optional<std::vector<std::optional<c10::supa::SUPAStream>>>& streams) {
+  TORCH_CHECK(!out_tensors.empty(), "Expected at least one output tensor to scatter to");
+
+  dim = at::maybe_wrap_dim(dim, tensor);
+  std::vector<int64_t> chunk_sizes;
+  chunk_sizes.reserve(out_tensors.size());
+  int64_t total_size = 0;
+  const auto tensor_sizes = tensor.sizes();
+  for (const auto i : c10::irange(out_tensors.size())) {
+    const auto& out_tensor = out_tensors[i];
+    TORCH_CHECK(
+        out_tensor.device().type() == c10::DeviceType::PrivateUse1,
+        "Expected all output tensors to be SUPA tensors, but output tensor at index ",
+        i,
+        " has device ",
+        out_tensor.device());
+    TORCH_CHECK(
+        out_tensor.dim() == tensor.dim(),
+        "Expected output tensor at index ",
+        i,
+        " to have ",
+        tensor.dim(),
+        " dimensions, but got ",
+        out_tensor.dim());
+    for (const auto d : c10::irange(tensor.dim())) {
+      if (d == dim) {
+        continue;
+      }
+      TORCH_CHECK(
+          out_tensor.size(d) == tensor_sizes[d],
+          "Output tensor at index ",
+          i,
+          " has invalid shape ",
+          out_tensor.sizes(),
+          ", but expected to match input shape except for scatter dim ",
+          dim);
+    }
+    chunk_sizes.emplace_back(out_tensor.size(dim));
+    total_size += out_tensor.size(dim);
+  }
+  TORCH_CHECK(
+      total_size == tensor.size(dim),
+      "Total size for output tensors along scatter dim ",
+      dim,
+      " does not match input size; got ",
+      total_size,
+      ", but expected ",
+      tensor.size(dim));
+
+  auto chunks = tensor.split_with_sizes(/*split_sizes=*/chunk_sizes, /*dim=*/dim);
+  c10::supa::OptionalSUPAStreamGuard supa_guard;
+  for (const auto i : c10::irange(out_tensors.size())) {
+    if (i < (streams ? streams->size() : 0U) && (*streams)[i]) {
+      const auto device_index = out_tensors[i].device().index();
+      TORCH_CHECK(
+          (*streams)[i]->device_index() == device_index,
+          "Expected the device associated with the stream at index ",
+          i,
+          " (was ",
+          (*streams)[i]->device_index(),
+          ") to match the device supplied at that index (expected ",
+          device_index,
+          ")");
+      supa_guard.reset_stream((*streams)[i]->unwrap());
+    }
+    out_tensors[i].copy_(chunks[i], /*non_blocking=*/true);
+  }
+  return out_tensors;
+}
+
+at::Tensor& supa_gather_out_impl(at::TensorList tensors, at::Tensor& out_tensor, int64_t dim) {
+  std::vector<int64_t> chunk_sizes;
+  chunk_sizes.reserve(tensors.size());
+  for (const auto& tensor : tensors) {
+    chunk_sizes.emplace_back(tensor.size(dim));
+  }
+  auto chunks = out_tensor.split_with_sizes(/*split_sizes=*/chunk_sizes, /*dim=*/dim);
+  for (const auto i : c10::irange(tensors.size())) {
+    chunks[i].copy_(tensors[i], /*non_blocking=*/true);
+  }
+  return out_tensor;
+}
+
+SupaGatherInfo supa_gather_info(at::TensorList tensors, int64_t dim) {
+  TORCH_CHECK(!tensors.empty(), "Expected at least one tensor to gather from");
+  int64_t total_size = 0;
+  const auto& first = tensors.front();
+  const auto first_size = first.sizes();
+  dim = at::maybe_wrap_dim(dim, first);
+  std::vector<int64_t> expected_size(first_size.begin(), first_size.end());
+  for (const auto i : c10::irange(tensors.size())) {
+    const auto& tensor = tensors[i];
+    TORCH_CHECK(
+        tensor.device().type() == c10::DeviceType::PrivateUse1,
+        "Expected all input tensors to be SUPA tensors, but tensor at index ",
+        i,
+        " has device ",
+        tensor.device());
+    TORCH_CHECK(
+        tensor.dim() == static_cast<int64_t>(expected_size.size()),
+        "Expected all input tensors to have the same number of dimensions, but tensor at index ",
+        i,
+        " has ",
+        tensor.dim(),
+        " dimensions, (expected ",
+        expected_size.size(),
+        ")");
+    expected_size[dim] = tensor.size(dim);
+    for (const auto dimension : c10::irange(expected_size.size())) {
+      TORCH_CHECK(
+          expected_size[dimension] == tensor.size(dimension),
+          "Input tensor at index ",
+          i,
+          " has invalid shape ",
+          tensor.sizes(),
+          ", but expected ",
+          at::IntArrayRef(expected_size));
+    }
+    total_size += tensor.size(dim);
+  }
+  expected_size[dim] = total_size;
+  return {std::move(expected_size), dim};
+}
+
+at::Tensor& supa_gather_out(at::TensorList tensors, at::Tensor& out_tensor, int64_t dim) {
+  const auto gather_info = supa_gather_info(tensors, dim);
+  TORCH_CHECK(
+      out_tensor.sizes() == gather_info.expected_size,
+      "Expected out tensor to have shape ",
+      at::IntArrayRef(gather_info.expected_size),
+      ", but got ",
+      out_tensor.sizes());
+  return supa_gather_out_impl(tensors, out_tensor, gather_info.dim);
+}
+
+at::Tensor supa_gather(at::TensorList tensors, int64_t dim, std::optional<int32_t> destination_index) {
+  const auto gather_info = supa_gather_info(tensors, dim);
+  at::Device device(c10::DeviceType::CPU);
+  if (!destination_index || *destination_index != -1) {
+    device = at::Device(
+        c10::DeviceType::PrivateUse1,
+        destination_index ? static_cast<c10::DeviceIndex>(*destination_index) : c10::DeviceIndex(-1));
+  }
+
+  auto result = at::empty(
+      gather_info.expected_size, tensors.front().options().device(device), tensors.front().suggest_memory_format());
+  return supa_gather_out_impl(tensors, result, gather_info.dim);
+}
+
+} // namespace
 
 inline c10::DeviceIndex THBPUtils_unpackDeviceIndex(PyObject* obj) {
   int overflow = 0;
@@ -1205,4 +1549,87 @@ void InitSupaModuleBindings(PyObject* module) {
   m.def("_can_use_cudnn_attention", [](const sdp::sdp_params& params, bool debug) {
     return sdp::can_use_cudnn_attention(params, debug);
   });
+
+  m.def(
+      "_supa_broadcast_coalesced",
+      [](std::vector<at::Tensor>& tensors, const std::vector<int64_t>& devices, size_t buffer_size) {
+        py::gil_scoped_release no_gil;
+        return supa_broadcast_coalesced(tensors, devices, buffer_size);
+      },
+      py::arg("tensors"),
+      py::arg("devices"),
+      py::arg("buffer_size"));
+  m.def(
+      "_supa_broadcast",
+      [](at::Tensor& tensor, const std::vector<int64_t>& devices) {
+        py::gil_scoped_release no_gil;
+        return supa_broadcast(tensor, devices);
+      },
+      py::arg("tensor"),
+      py::arg("devices"));
+  m.def(
+      "_supa_broadcast_out",
+      [](at::Tensor& tensor, std::vector<at::Tensor>& out_tensors) -> std::vector<at::Tensor>& {
+        py::gil_scoped_release no_gil;
+        return supa_broadcast_out(tensor, out_tensors);
+      },
+      py::arg("tensor"),
+      py::arg("out"));
+  m.def(
+      "_supa_scatter",
+      [](const at::Tensor& tensor,
+         std::vector<int64_t>& devices,
+         const std::optional<std::vector<int64_t>>& chunk_sizes,
+         int64_t dim,
+         std::optional<py::object> py_streams) {
+        std::optional<std::vector<std::optional<c10::supa::SUPAStream>>> streams;
+        if (py_streams.has_value() && !py_streams->is_none()) {
+          py::handle handle = *py_streams;
+          streams = THPUtils_PySequence_to_SUPAStreamList(handle.ptr());
+        }
+        py::gil_scoped_release no_gil;
+        return supa_scatter(tensor, devices, chunk_sizes, dim, streams);
+      },
+      py::arg("tensor"),
+      py::arg("devices"),
+      py::arg("chunk_sizes"),
+      py::arg("dim"),
+      py::arg("streams"));
+  m.def(
+      "_supa_scatter_out",
+      [](const at::Tensor& tensor,
+         std::vector<at::Tensor>& out_tensors,
+         int64_t dim,
+         std::optional<py::object> py_streams) {
+        std::optional<std::vector<std::optional<c10::supa::SUPAStream>>> streams;
+        if (py_streams.has_value() && !py_streams->is_none()) {
+          py::handle handle = *py_streams;
+          streams = THPUtils_PySequence_to_SUPAStreamList(handle.ptr());
+        }
+        py::gil_scoped_release no_gil;
+        return supa_scatter_out(tensor, out_tensors, dim, streams);
+      },
+      py::arg("tensor"),
+      py::arg("out"),
+      py::arg("dim"),
+      py::arg("streams"));
+  m.def(
+      "_supa_gather",
+      [](std::vector<at::Tensor>& tensors, int64_t dim, std::optional<int32_t> destination_index) {
+        py::gil_scoped_release no_gil;
+        return supa_gather(tensors, dim, destination_index);
+      },
+      py::arg("tensors"),
+      py::arg("dim"),
+      py::arg("destination_index"));
+  m.def(
+      "_supa_gather_out",
+      [](std::vector<at::Tensor>& tensors, at::Tensor& out_tensor, int64_t dim) -> at::Tensor& {
+        py::gil_scoped_release no_gil;
+        return supa_gather_out(tensors, out_tensor, dim);
+      },
+      py::arg("tensors"),
+      py::arg("out"),
+      py::arg("dim"),
+      py::return_value_policy::reference_internal);
 }

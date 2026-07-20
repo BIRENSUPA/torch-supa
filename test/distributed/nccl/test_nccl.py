@@ -2,7 +2,6 @@
 
 # Owner(s): ["oncall: distributed"]
 
-import os
 import re
 import sys
 
@@ -55,10 +54,6 @@ broadcast_dtypes = (
     else [torch.float8_e4m3fn, torch.float8_e5m2]
 )
 
-# bccl requires to set topo file path
-os.environ["NCCL_TOPO_FILE"] = os.getenv("BIREN_HOME", "/usr/local/birensupa/all/latest") + "/bccl/xml/topo_2c.xml"
-
-@pytest.mark.skip(reason="random mistmatch? but print result is the same")
 class TestNCCL(TestCase):
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
     @pytest.mark.sanity
@@ -80,6 +75,7 @@ class TestNCCL(TestCase):
     @pytest.mark.regression
     @pytest.mark.stress
     @pytest.mark.full
+    @pytest.mark.skip(reason="random mistmatch? but print result is the same")
     def test_broadcast(self, device, dtype):
         expected = torch.zeros(128).uniform_().to(dtype=dtype)
         tensors = [expected.cuda()]
@@ -109,6 +105,7 @@ class TestNCCL(TestCase):
     @pytest.mark.regression
     @pytest.mark.stress
     @pytest.mark.full
+    @pytest.mark.skip(reason="random mistmatch? but print result is the same")
     def test_reduce(self, device, dtype):
         cpu_tensors = [
             torch.zeros(128).uniform_().to(dtype=dtype) for i in range(nGPUs)
@@ -137,6 +134,7 @@ class TestNCCL(TestCase):
     @pytest.mark.regression
     @pytest.mark.stress
     @pytest.mark.full
+    @pytest.mark.skip(reason="random mistmatch? but print result is the same")
     def test_all_reduce(self, device, dtype):
         cpu_tensors = [
             torch.zeros(128).uniform_().to(dtype=dtype) for i in range(nGPUs)
@@ -210,6 +208,7 @@ class TestNCCL(TestCase):
     @pytest.mark.regression
     @pytest.mark.stress
     @pytest.mark.full
+    @pytest.mark.skip(reason="random mistmatch? but print result is the same")
     def test_all_gather(self, device, dtype):
         cpu_inputs = [torch.zeros(128).uniform_().to(dtype=dtype) for i in range(nGPUs)]
         expected = torch.cat(cpu_inputs, 0)
@@ -243,6 +242,7 @@ class TestNCCL(TestCase):
     @pytest.mark.regression
     @pytest.mark.stress
     @pytest.mark.full
+    @pytest.mark.skip(reason="random mistmatch? but print result is the same")
     def test_reduce_scatter(self, device, dtype):
         in_size = 32 * nGPUs
         out_size = 32

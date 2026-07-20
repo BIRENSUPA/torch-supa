@@ -471,8 +471,8 @@ ProcessGroupBCCL::WorkBCCL::WorkBCCL(
   // DEFAULT_FLAGS = cudaEventDisableTiming.
   if (supaEventCacheEnabled) {
     bcclStartEvent_ =
-        enableTiming ? ProcessGroupBCCL::SUPAEventCache::get(device.index()).create(enableTiming) : nullptr;
-    bcclEndEvent_ = ProcessGroupBCCL::SUPAEventCache::get(device.index()).create(enableTiming);
+        enableTiming ? ProcessGroupBCCL::SUPAEventCache::get(device.index())->create(enableTiming) : nullptr;
+    bcclEndEvent_ = ProcessGroupBCCL::SUPAEventCache::get(device.index())->create(enableTiming);
   } else {
     bcclStartEvent_ = enableTiming ? std::make_shared<c10::supa::SUPAEvent>(supaEventDefault) : nullptr;
     bcclEndEvent_ = std::make_shared<c10::supa::SUPAEvent>(enableTiming ? supaEventDefault : supaEventDisableTiming);
@@ -870,11 +870,11 @@ ProcessGroupBCCL::SUPAEventCache::SUPAEventCache() = default;
 // This is to avoid the potential deadlock caused by CudaEventDestroy.
 std::shared_ptr<c10::supa::SUPAEvent> ProcessGroupBCCL::SUPAEventCache::create(bool timing) {
   // register the deleter as a callback when the WorkBCCL object is destroyed.
-  auto deleter = [this, timing](c10::supa::SUPAEvent* event) {
-    std::lock_guard<std::mutex> lock(this->cacheMutex_);
+  auto deleter = [cache = shared_from_this(), timing](c10::supa::SUPAEvent* event) {
+    std::lock_guard<std::mutex> lock(cache->cacheMutex_);
     // We put the event back to the cache deque once the WorkBCCL object is
     // destroyed.
-    this->eventsArray_.at(timing ? 1 : 0).push_back(event);
+    cache->eventsArray_.at(timing ? 1 : 0).push_back(event);
   };
   c10::supa::SUPAEvent* event = nullptr;
   {
@@ -893,21 +893,18 @@ std::shared_ptr<c10::supa::SUPAEvent> ProcessGroupBCCL::SUPAEventCache::create(b
   return std::shared_ptr<c10::supa::SUPAEvent>(event, std::move(deleter));
 }
 
-ProcessGroupBCCL::SUPAEventCache& ProcessGroupBCCL::SUPAEventCache::get(at::DeviceIndex device) {
+std::shared_ptr<ProcessGroupBCCL::SUPAEventCache> ProcessGroupBCCL::SUPAEventCache::get(at::DeviceIndex device) {
   // A per-thread singleton of device-to-SUPAEventCache map.
   // Map is needed because events cannot be reused across devices.
   // Per-thread ownership is needed to support multi-threaded case (instead of
   // multi-process case).
-  static thread_local std::map<at::DeviceIndex, ProcessGroupBCCL::SUPAEventCache> cacheDeviceMap;
+  static thread_local std::map<at::DeviceIndex, std::shared_ptr<ProcessGroupBCCL::SUPAEventCache>> cacheDeviceMap;
   // Check if device has already been in the map, if not, add a new entry
   auto it = cacheDeviceMap.find(device);
   if (it == cacheDeviceMap.end()) {
-    // Use in-place contruction, which avoids move or copy of the cache
-    // (the mutex of the cache is not movable/copiable)
-    it = cacheDeviceMap.emplace_hint(
-        it, std::piecewise_construct, std::forward_as_tuple(device), std::forward_as_tuple());
+    cacheDeviceMap.emplace(device, std::make_shared<ProcessGroupBCCL::SUPAEventCache>());
   }
-  return it->second;
+  return cacheDeviceMap[device];
 }
 
 static std::atomic<size_t> process_group_id = 0;

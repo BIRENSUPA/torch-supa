@@ -5,8 +5,8 @@
  */
 
 #include <c10/core/DeviceType.h>
+#include <c10/util/Exception.h>
 #include <torch/csrc/autograd/utils/wrap_outputs.h>
-#include <cstdio>
 #include <string>
 
 #include "torch_supa/csrc/core/supa/SUPAFunctions.h"
@@ -79,15 +79,9 @@ static PyObject* TensorNew(PyTypeObject* type, PyObject* args, PyObject* kwargs)
   HANDLE_TH_ERRORS
   auto& tensor_type = *((PyTensorType*)type);
   if (tensor_type.is_supa) {
-    static auto warn_once = []() {
-      printf(
-          "Warning: The torch.supa.*DtypeTensor constructors are no longer recommended. "
-          "It's best to use methods such as torch.tensor(data, dtype=*, device='supa') "
-          "to create tensors.\n");
-      std::fflush(stdout);
-      return true;
-    }();
-    (void)warn_once; // silence unused warning
+    TORCH_WARN_ONCE(
+        "The torch.cuda.*DtypeTensor constructors are no longer recommended. "
+        "It's best to use methods such as torch.tensor(data, dtype=*, device='cuda') to create tensors.");
   }
   if (tensor_type.is_supa && c10::supa::device_count() == 0) {
     throw UnavailableType(tensor_type);
@@ -128,6 +122,18 @@ PyObject* tensorIsSupa(PyTensorType* self, void* /*unused*/) {
   Py_RETURN_FALSE;
 }
 
+PyObject* tensorIsCuda(PyTensorType* self, void* /*unused*/) {
+  Py_RETURN_FALSE;
+}
+
+PyObject* tensorIsXpu(PyTensorType* self, void* /*unused*/) {
+  Py_RETURN_FALSE;
+}
+
+PyObject* tensorIsSparseCsr(PyTensorType* self, void* /*unused*/) {
+  Py_RETURN_FALSE;
+}
+
 PyObject* tensorIsSparse(PyTensorType* self, void* /*unused*/) {
   if (self->layout->layout == at::Layout::Strided) {
     Py_RETURN_FALSE;
@@ -144,8 +150,11 @@ using getter = PyObject* (*)(PyObject*, void*);
 static struct PyGetSetDef metaclass_properties[] = {
     {"dtype", (getter)tensorDtype, nullptr, nullptr, nullptr},
     {"layout", (getter)tensorLayout, nullptr, nullptr, nullptr},
+    {"is_cuda", (getter)tensorIsCuda, nullptr, nullptr, nullptr},
+    {"is_xpu", (getter)tensorIsXpu, nullptr, nullptr, nullptr},
     {"is_supa", (getter)tensorIsSupa, nullptr, nullptr, nullptr},
     {"is_sparse", (getter)tensorIsSparse, nullptr, nullptr, nullptr},
+    {"is_sparse_csr", (getter)tensorIsSparseCsr, nullptr, nullptr, nullptr},
     {nullptr}};
 
 static PyTypeObject metaclass = {

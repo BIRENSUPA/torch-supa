@@ -22,7 +22,22 @@ foreach(config ${_supa_configuration_types})
 endforeach()
 option(SUPA_HOST_COMPILATION_CPP "Host code compilation mode" ON)
 option(SUPA_VERBOSE_BUILD "Print out the commands run while compiling the SUPA source file.  With the Makefile generator this defaults to VERBOSE variable specified on the command line, but can be forced on with this option." OFF)
+option(USE_CCACHE "Use ccache to accelerate BRCC compilation" OFF)
 mark_as_advanced(SUPA_HOST_COMPILATION_CPP)
+
+set(SUPA_BRCC_COMPILER_LAUNCHER "")
+if(USE_CCACHE)
+    find_program(SUPA_CCACHE_EXECUTABLE ccache)
+    if(SUPA_CCACHE_EXECUTABLE)
+        set(SUPA_BRCC_COMPILER_LAUNCHER "${SUPA_CCACHE_EXECUTABLE}")
+        message(STATUS "Using ccache for BRCC: ${SUPA_CCACHE_EXECUTABLE}")
+    else()
+        message(STATUS "ccache not found, BRCC compilation will run without ccache")
+    endif()
+else()
+    message(STATUS "ccache disabled for BRCC")
+endif()
+mark_as_advanced(SUPA_CCACHE_EXECUTABLE SUPA_BRCC_COMPILER_LAUNCHER)
 
 ###############################################################################
 # FIND: SUPA and associated helper binaries

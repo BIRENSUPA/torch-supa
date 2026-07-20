@@ -47,7 +47,7 @@ def patch_FSDPTestMultiThread_setUp():
         os.environ["MASTER_ADDR"] = "127.0.0.1"
         os.environ["MASTER_PORT"] = "36666"
         os.environ["BCCL_ASYNC_ERROR_HANDLING"] = "1"
-        os.environ["BCCL_TRACE_BUFFER_SIZE"] = "1024"
+        os.environ["TORCH_NCCL_TRACE_BUFFER_SIZE"] = "1024"
         os.environ["NCCL_TOPO_FILE"] = os.getenv("BIREN_HOME", "/usr/local/birensupa/all/latest") + "/bccl/xml/topo_2c.xml"
 
         self._spawn_threads()
@@ -67,7 +67,7 @@ def patch_FSDPTest_setUp():
         os.environ["MASTER_ADDR"] = "127.0.0.1"
         os.environ["MASTER_PORT"] = "36666"
         os.environ["BCCL_ASYNC_ERROR_HANDLING"] = "1"
-        os.environ["BCCL_TRACE_BUFFER_SIZE"] = "1024"
+        os.environ["TORCH_NCCL_TRACE_BUFFER_SIZE"] = "1024"
 
         os.environ["NCCL_TOPO_FILE"] = os.getenv("BIREN_HOME", "/usr/local/birensupa/all/latest") + "/bccl/xml/topo_2c.xml"
 

@@ -26,7 +26,7 @@ def is_available(tensors):
             return False
         if not tensor.is_contiguous():
             return False
-        if not tensor.is_supa():
+        if not tensor.is_supa:
             return False
         device = tensor.get_device()
         if device in devices:

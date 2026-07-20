@@ -465,11 +465,11 @@ class TORCH_API ProcessGroupBCCL : public Backend {
     friend class ProcessGroupBCCL;
   };
 
-  class SUPAEventCache {
+  class SUPAEventCache : public std::enable_shared_from_this<SUPAEventCache> {
    public:
     SUPAEventCache();
     std::shared_ptr<c10::supa::SUPAEvent> create(bool timing);
-    static SUPAEventCache& get(at::DeviceIndex device);
+    static std::shared_ptr<SUPAEventCache> get(at::DeviceIndex device);
 
    private:
     std::mutex cacheMutex_;

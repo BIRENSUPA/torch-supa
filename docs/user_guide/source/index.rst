@@ -6,9 +6,9 @@ Torch SUPA 用户指南
 建议按以下路径阅读：
 
 - 新用户：先阅读 :doc:`chapter01_torch_supa_overview`、:doc:`chapter02_torch_supa_environments` 和 :doc:`chapter03_torch_supa_quickstart`。
-- 迁移用户：重点阅读 :doc:`chapter03_torch_supa_quickstart`、:doc:`chapter04_torch_supa_features` 和 :doc:`chapter05_torch_supa_api`。
+- 迁移用户：重点阅读 :doc:`chapter03_torch_supa_quickstart`、:doc:`chapter04_torch_supa_new_ops` 和 :doc:`chapter05_torch_supa_api_limitations`。
 - 调优与排障用户：重点阅读 :doc:`chapter06_torch_supa_envconfig`、:doc:`chapter07_torch_supa_tools` 和 :doc:`chapter08_torch_supa_faq`。
-- 高级用户和开发者：可参考 :doc:`chapter04_torch_supa_features` 中的算子适配说明，以及 :doc:`chapter09_torch_supa_appendix` 中的开发者参考内容。
+- 高级用户和开发者：可参考 :doc:`chapter04_torch_supa_new_ops` 中的算子适配说明，以及 :doc:`chapter09_torch_supa_appendix` 中的术语说明和开发者参考内容。
 
 .. toctree::
    :maxdepth: 2
@@ -18,8 +18,8 @@ Torch SUPA 用户指南
    chapter01_torch_supa_overview.rst
    chapter02_torch_supa_environments.rst
    chapter03_torch_supa_quickstart.rst
-   chapter04_torch_supa_features.rst
-   chapter05_torch_supa_api.rst
+   chapter04_torch_supa_new_ops.rst
+   chapter05_torch_supa_api_limitations.rst
    chapter06_torch_supa_envconfig.rst
    chapter07_torch_supa_tools.rst
    chapter08_torch_supa_faq.rst

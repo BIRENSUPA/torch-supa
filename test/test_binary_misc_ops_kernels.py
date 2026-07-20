@@ -185,6 +185,8 @@ def test_mse_loss(shape, reduction, dtype):
         pytest.param((2, 3, 4), torch.float32, "mean", False, True, (3, 1)),
     ],
 )
+@pytest.mark.sanity
+@pytest.mark.regression
 def test_binary_cross_entropy_with_logits_loss(
     shape, reduction, dtype, with_weight, with_pos_weight, pos_weight_shape
 ):

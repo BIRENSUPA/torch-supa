@@ -10,10 +10,6 @@ import torch.nn.functional as F
 _ORIGINAL_NORMALIZE = F.normalize
 
 
-def _is_supa_tensor(input):
-    return isinstance(input, torch.Tensor) and input.device.type == "supa"
-
-
 def _normalize_fused_enabled():
     return os.getenv("BRTB_ENABLE_NATIVE_OP", "0").lower() not in ("1", "true", "on", "yes")
 
@@ -21,7 +17,7 @@ def _normalize_fused_enabled():
 def _can_use_normalize_fused(input, p, dim, eps, out):
     return (
         _normalize_fused_enabled()
-        and _is_supa_tensor(input)
+        and input.is_supa
         and p == 2.0
         and dim == -1
         and out is None

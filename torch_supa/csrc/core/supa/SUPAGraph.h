@@ -42,7 +42,7 @@ struct TORCH_SUPA_API SUPAGraph {
   void replay();
   void reset();
   MempoolId_t pool();
-  static void enable_debug_mode();
+  void enable_debug_mode();
   void debug_dump(const std::string& debug_path);
 
  protected:

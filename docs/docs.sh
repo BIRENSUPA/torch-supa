@@ -19,11 +19,21 @@ show_help() {
 install_dependencies() {
     echo "请在有root权限的用户下执行此操作！！！"
     apt-get update
-    apt-get install doxygen-latex doxygen-doc doxygen-gui graphviz -y
+    apt-get install doxygen-latex doxygen-doc doxygen-gui graphviz wget unzip fontconfig -y
     apt install latexmk -y
     apt install texlive-full -y
     apt install xindy -y
     pip install sphinx breathe rst2pdf sphinx_rtd_theme exhale
+
+    echo "安装思源雅黑字体（Source Han Sans SC）"
+    font_dir="/usr/local/share/fonts/source-han-sans-sc"
+    tmp_dir="$(mktemp -d)"
+    mkdir -p "${font_dir}"
+    wget -O "${tmp_dir}/SourceHanSansSC.zip" "https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/SourceHanSansSC.zip"
+    unzip -o "${tmp_dir}/SourceHanSansSC.zip" -d "${tmp_dir}/SourceHanSansSC"
+    find "${tmp_dir}/SourceHanSansSC" -name "*.otf" -exec cp {} "${font_dir}/" \;
+    fc-cache -fv
+    rm -rf "${tmp_dir}"
 }
 
 generate_pdf(){
@@ -32,7 +42,7 @@ generate_pdf(){
     cd ${DIR}/sphinx
     make latexpdf
     cd ${DIR}/user_guide
-    bash build.sh
+    make html
 }
 
 clean_docs() {

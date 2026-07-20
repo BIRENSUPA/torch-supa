@@ -26,10 +26,12 @@ torch_supa 提供了环境信息收集工具，用于诊断环境配置问题。
 
 这些信息可帮助判断版本是否匹配、驱动和运行环境是否正确加载，以及设备是否可见。
 
+.. _profiler-tool:
+
 性能分析工具
 ---------------
 
-torch_supa 支持 PyTorch Profiler 进行性能分析，详见 :ref:`profiler-tool` 章节。建议在确认模型可以正常运行后，再使用 Profiler 定位算子耗时、内存使用和数据加载瓶颈。
+torch_supa 支持 PyTorch Profiler 进行性能分析，详见 官方`torch.profiler 工具 <https://docs.pytorch.org/docs/2.13/profiler.html#module-torch.profiler>`_ 使用方法。建议在确认模型可以正常运行后，再使用 Profiler 定位算子耗时、内存使用和数据加载瓶颈。
 
 日志调试
 ---------------

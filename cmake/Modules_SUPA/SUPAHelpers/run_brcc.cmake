@@ -24,6 +24,7 @@ endif()
 
 # Set these up as variables to make reading the generated file easier
 set(SUPA_BRCC_EXECUTABLE "@SUPA_BRCC_EXECUTABLE@") # path
+set(SUPA_BRCC_COMPILER_LAUNCHER @SUPA_BRCC_COMPILER_LAUNCHER@) # list
 set(SUPA_HOST_COMPILER "@SUPA_HOST_COMPILER@") # path
 set(CMAKE_COMMAND "@CMAKE_COMMAND@") # path
 set(SUPA_CLANG_PATH "@SUPA_CLANG_PATH@") #path
@@ -43,6 +44,7 @@ set(generated_file_relative_path "@generated_file_relative_path@") # path, targe
 
 if(NOT host_flag)
     set(__CC ${SUPA_BRCC_EXECUTABLE})
+    set(__CC_LAUNCHER ${SUPA_BRCC_COMPILER_LAUNCHER})
     if("${SUPA_PLATFORM}" STREQUAL "biren")
         if("${BRCC_COMPILER}" STREQUAL "clang")
             if(NOT "x${SUPA_CLANG_PATH}" STREQUAL "x")
@@ -55,6 +57,7 @@ if(NOT host_flag)
     endif()
 else()
     set(__CC ${SUPA_HOST_COMPILER})
+    set(__CC_LAUNCHER "")
     set(__CC_FLAGS ${CMAKE_HOST_FLAGS} ${CMAKE_HOST_FLAGS_${build_configuration}})
 endif()
 set(__CC_INCLUDES ${SUPA_BRCC_INCLUDE_ARGS})
@@ -99,7 +102,7 @@ supa_execute_process(
 # Generate the dependency file
 supa_execute_process(
     "Generating dependency file: ${cmake_dependency_file}"
-    COMMAND "${__CC}"
+    COMMAND ${__CC_LAUNCHER} "${__CC}"
     --supa-host-only
     -Wno-unused-command-line-argument
     -M
@@ -121,7 +124,7 @@ FILE(WRITE "${cmake_dependency_file}" "${TEXT}")
 # Generate the output file
 supa_execute_process(
     "Generating ${generated_file}"
-    COMMAND "${__CC}"
+    COMMAND ${__CC_LAUNCHER} "${__CC}"
     -c
     "${source_file}"
     -o "${generated_file}"

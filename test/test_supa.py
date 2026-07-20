@@ -1,13 +1,17 @@
 # Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd.
 
+import ctypes
 import gc
+import json
 import os
+import pickle
 import threading
 
 import torch
 import torch_supa
 from torch_supa.utils import torch_version_ge
-from torch.testing._internal.common_utils import TestCase
+from torch.testing._internal.common_utils import TestCase, get_cycles_per_ms
+from torch_supa.testing.common_utils import freeze_rng_state
 
 import pytest
 
@@ -105,6 +109,18 @@ class TestSupa(TestCase):
         # Testing the behaviour for No argument
         device_name_no_argument = torch.cuda.get_device_name()
         self.assertEqual(current_device_name, device_name_no_argument)
+
+
+    def test_supa_get_device_capability(self):
+        # Testing the behaviour with None as an argument
+        current_device = torch.cuda.current_device()
+        current_device_capability = torch.cuda.get_device_capability(current_device)
+        device_capability_None = torch.cuda.get_device_capability(None)
+        self.assertEqual(current_device_capability, device_capability_None)
+
+        # Testing the behaviour for No argument
+        device_capability_no_argument = torch.cuda.get_device_capability()
+        self.assertEqual(current_device_capability, device_capability_no_argument)
 
 
     def test_supa_get_device_properties_uuid(self):
@@ -218,6 +234,81 @@ class TestSupa(TestCase):
         torch.cuda.set_per_process_memory_fraction(init_fraction)
 
 
+    def test_copy_non_blocking(self):
+        def _test_copy_non_blocking(a, b):
+            event = torch.cuda.Event()
+            a.copy_(b, non_blocking=True)
+            event.record()
+            event.synchronize()
+            self.assertEqual(a, b)
+
+        # 1kb copies
+        x = torch.ones(1000, dtype=torch.uint8).cuda()
+        y = torch.zeros(1000, dtype=torch.uint8).pin_memory()
+        _test_copy_non_blocking(x, y)
+
+        x = torch.zeros(1000, dtype=torch.uint8).pin_memory()
+        y = torch.ones(1000, dtype=torch.uint8).cuda()
+        _test_copy_non_blocking(x, y)
+
+        # Test the case where the pinned data_ptr is not equal to the storage data_ptr.
+        x_base = torch.zeros(1000, dtype=torch.uint8).pin_memory()
+        x = x_base[1:]
+        self.assertTrue(x.is_pinned())
+        self.assertTrue(x_base.is_pinned())
+        self.assertNotEqual(x_base.data_ptr(), x.data_ptr())
+        self.assertEqual(x_base.storage().data_ptr(), x.storage().data_ptr())
+        y = torch.ones(1000 - 1, dtype=torch.uint8).cuda()
+        _test_copy_non_blocking(x, y)
+
+
+    def test_copy_non_blocking_type_conversion(self):
+        a = torch.ones(1, device="cuda")
+        b = torch.zeros(1, device="cpu", pin_memory=True)
+        c = torch.empty(1, device="cuda", dtype=torch.long)
+        torch.cuda._sleep(int(5 * get_cycles_per_ms()))
+        b.copy_(a, non_blocking=True)
+        c.copy_(b, non_blocking=True)
+        self.assertEqual(a, c, exact_dtype=False)
+
+
+    def test_to_cpu_blocking_by_default(self):
+        src = torch.randn(1000, device="cuda")
+        torch.cuda.synchronize()
+        torch.cuda._sleep(int(5 * get_cycles_per_ms()))
+        dst = src.to(device="cpu")
+        self.assertEqual(torch.cuda.current_stream().query(), True)
+        self.assertEqual(src, dst)
+        self.assertFalse(dst.is_pinned())
+
+
+    def test_torch_manual_seed_seeds_cuda_devices(self):
+        with freeze_rng_state():
+            x = torch.zeros(4, 4).float().cuda()
+            torch.manual_seed(2)
+            self.assertEqual(torch.cuda.initial_seed(), 2)
+            x.uniform_()
+            torch.manual_seed(2)
+            y = x.clone().uniform_()
+            self.assertEqual(x, y)
+            self.assertEqual(torch.cuda.initial_seed(), 2)
+
+
+    def test_manual_seed(self):
+        with freeze_rng_state():
+            x = torch.zeros(4, 4).float().cuda()
+            torch.cuda.manual_seed(2)
+            self.assertEqual(torch.cuda.initial_seed(), 2)
+            x.uniform_()
+            a = torch.bernoulli(torch.full_like(x, 0.5))
+            torch.cuda.manual_seed(2)
+            y = x.clone().uniform_()
+            b = torch.bernoulli(torch.full_like(x, 0.5))
+            self.assertEqual(x, y)
+            self.assertEqual(a, b)
+            self.assertEqual(torch.cuda.initial_seed(), 2)
+
+
     def test_get_device_index(self):
         from torch.cuda import _get_device_index
 
@@ -244,6 +335,19 @@ class TestSupa(TestCase):
         default_stream.synchronize()
         self.assertTrue(default_stream.query())
 
+
+    def test_events(self):
+        stream = torch.cuda.current_stream()
+        event = torch.cuda.Event(enable_timing=True)
+        self.assertTrue(event.query())
+        start_event = torch.cuda.Event(enable_timing=True)
+        stream.record_event(start_event)
+        torch.cuda._sleep(int(5 * get_cycles_per_ms()))
+        stream.record_event(event)
+        self.assertFalse(event.query())
+        event.synchronize()
+        self.assertTrue(event.query())
+        self.assertGreater(start_event.elapsed_time(event), 0)
 
     def test_generic_stream_event(self):
         stream = torch.Stream("cuda")
@@ -430,11 +534,372 @@ class TestSupa(TestCase):
     )
     def test_empty_cache_during_use_mem_pool(self):
         """empty_cache() inside use_mem_pool() with allocations should not crash."""
-        x = torch.randn(1024, 1024, device="cuda")
+        x = torch.randn(1024, device="cuda")
         del x
 
         pool = torch.cuda.MemPool()
         with torch.cuda.use_mem_pool(pool):
-            y = torch.randn(512, 512, device="cuda")
+            y = torch.randn(512, device="cuda")
             torch.cuda.empty_cache()
             del y
+
+
+class TestSupaMallocAsync(TestCase):
+    @pytest.mark.regression
+    def test_max_split_expandable(self):
+        try:
+            torch.cuda.memory.empty_cache()
+            mb = 1024 * 1024
+            _, all_memory = torch.cuda.memory.mem_get_info()
+            pre_reserved = torch.cuda.memory_reserved()
+            total_allowed = 120 * mb + pre_reserved
+            fraction_allowed = total_allowed / all_memory
+            self.assertEqual(int(fraction_allowed * all_memory), total_allowed)
+            torch.cuda.memory.set_per_process_memory_fraction(fraction_allowed)
+
+            def alloc(n):
+                return torch.ones(n * mb, dtype=torch.int8, device="cuda")
+
+            torch.cuda.memory._set_allocator_settings(
+                "expandable_segments:False,max_split_size_mb:40"
+            )
+            a = alloc(40)
+            torch.cuda.memory._set_allocator_settings(
+                "expandable_segments:True,max_split_size_mb:40"
+            )
+            b = alloc(40)
+            torch.cuda.memory._set_allocator_settings(
+                "expandable_segments:False,max_split_size_mb:40"
+            )
+            c = alloc(40)
+            with self.assertRaises(torch.OutOfMemoryError):
+                alloc(40)
+            del a, b, c
+            # force release_cached_blocks to run with some expandable segments in the free list
+            alloc(120)
+        finally:
+            torch.cuda.memory.set_per_process_memory_fraction(1.0)
+
+    @pytest.mark.regression
+    def test_garbage_collect_expandable(self):
+        try:
+            torch.cuda.memory.empty_cache()
+            mb = 1024 * 1024
+            _, all_memory = torch.cuda.memory.mem_get_info()
+            pre_reserved = torch.cuda.memory_reserved()
+            total_allowed = 120 * mb + pre_reserved
+            fraction_allowed = total_allowed / all_memory
+            self.assertEqual((fraction_allowed * all_memory), total_allowed)
+            torch.cuda.memory.set_per_process_memory_fraction(fraction_allowed)
+
+            def alloc(n):
+                return torch.ones(n * mb, dtype=torch.int8, device="cuda")
+
+            torch.cuda.memory._set_allocator_settings(
+                "expandable_segments:False,garbage_collection_threshold:0.5"
+            )
+            a = alloc(40)
+            torch.cuda.memory._set_allocator_settings(
+                "expandable_segments:True,garbage_collection_threshold:0.5"
+            )
+            b = alloc(40)
+            del a, b
+            # causes GC to run. The expandable segment block will be split
+            # so GC would not attempt to free it anyway, but this at least makes sure
+            # expandable_segment blocks can be in the free list when this is called.
+            alloc(80)
+        finally:
+            torch.cuda.memory.set_per_process_memory_fraction(1.0)
+
+
+    @pytest.mark.sanity
+    @pytest.mark.regression
+    def test_cpp_memory_snapshot_pickle(self):
+        from torch_supa.utils.cpp_extension import load_inline
+        torch_supa_home = os.path.dirname(os.path.realpath(torch_supa.__file__))
+
+        source = """
+        #include <torch_supa/csrc/supa/memory_snapshot.h>
+        py::object do_snapshot() {
+            std::string data = torch_supa::supa::_memory_snapshot_pickled();
+            return py::bytes(data);
+        }
+        void record(bool e, bool ctx) {
+            torch_supa::supa::_record_memory_history(e, ctx, 10, ctx, ctx);
+        }
+        """
+        m = load_inline(
+            name="snapshot", 
+            cpp_sources=[source], 
+            functions=["do_snapshot", "record"],
+            with_supa=True,
+            extra_ldflags=[f"-L{torch_supa_home}/lib", "-ltorch_supa"],
+        )
+        for ctx in (False, True):
+            try:
+                m.record(True, ctx)
+
+                @torch.jit.script
+                def the_script_fn():
+                    return torch.rand(31, 41, device="cuda")
+
+                def run():
+                    t = the_script_fn()
+                    return pickle.loads(m.do_snapshot())
+
+                mem = run()
+                found = False
+                for s in mem["segments"]:
+                    for b in s["blocks"]:
+                        if b["state"] == "active_allocated":
+                            if b["requested_size"] == 31 * 41 * 4:
+                                if ctx:
+                                    frame_text = str(b["frames"])
+                                    # C++ frame
+                                    self.assertTrue("::rand" in frame_text)
+                                    # script frame
+                                    self.assertTrue("the_script_fn" in frame_text)
+                                    # python frame
+                                    self.assertTrue("case.py" in frame_text)
+                                found = True
+                last_action = mem["device_traces"][0][-1]
+                self.assertEqual(last_action["action"], "alloc")
+                self.assertEqual(last_action["size"], 31 * 41 * 4)
+                self.assertTrue(found)
+            finally:
+                m.record(False, False)
+
+
+    @pytest.mark.sanity
+    @pytest.mark.regression
+    def test_memory_plots_free_stack(self):
+        for context in ["alloc", "all", "state"]:
+            try:
+                torch.cuda.memory.empty_cache()
+                torch.cuda.memory._record_memory_history(context=context)
+                x = None
+
+                def thealloc():
+                    nonlocal x
+                    x = torch.rand(3, 4, device="cuda")
+
+                def thefree():
+                    nonlocal x
+                    del x
+
+                thealloc()
+                thefree()
+                ss = json.dumps(torch.cuda.memory._snapshot())
+                self.assertEqual(("thefree" in ss), (context == "all"))
+                self.assertEqual(("thealloc" in ss), (context != "state"))
+            finally:
+                torch.cuda.memory._record_memory_history(None)
+
+
+    @pytest.mark.sanity
+    @pytest.mark.regression
+    def test_memory_plots_free_segment_stack(self):
+        for context in ["alloc", "all", "state"]:
+            try:
+                torch._C._cuda_clearCublasWorkspaces()
+                torch.cuda.memory.empty_cache()
+                torch.cuda.memory._record_memory_history(context=context)
+                x = torch.rand(3, 4, device="cuda")
+                del x
+                torch.cuda.memory.empty_cache()
+
+                ss = json.dumps(torch.cuda.memory._snapshot())
+                self.assertEqual(("empty_cache" in ss), (context == "all"))
+            finally:
+                torch.cuda.memory._record_memory_history(None)
+
+
+def cudagraphify(fn, inputs, pool=None):
+    torch.cuda.synchronize()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        fn(*inputs)
+    stream.synchronize()
+    torch.cuda.current_stream().wait_stream(stream)
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream, pool=pool):
+        static_outputs = fn(*inputs)
+
+    return graph, static_outputs
+
+
+@pytest.mark.sanity
+@pytest.mark.regression
+class TestBlockStateAbsorption(TestCase):
+    def test_check_pool_live_allocations(self):
+        def foo():
+            return torch.ones([4], device="cuda")
+
+        pool = torch.cuda.graph_pool_handle()
+        graph, outputs = cudagraphify(foo, [], pool=pool)
+
+        index = outputs[0].device.index
+
+        def check(live_dps):
+            return torch._C._cuda_checkPoolLiveAllocations(index, pool, live_dps)
+
+        self.assertTrue(check({outputs[0].data_ptr()}))
+
+        self.assertFalse(check({outputs[0].data_ptr(), 0}))
+        self.assertFalse(check(set()))
+
+        del outputs
+        self.assertTrue(check(set()))
+
+
+class TestMemPool(TestCase):
+    def get_dummy_allocator(self):
+        from torch_supa.utils.cpp_extension import load_inline
+        torch_supa_home = os.path.dirname(os.path.realpath(torch_supa.__file__))
+
+        dummy_allocator_source = """
+        #include <torch/extension.h>
+        #include <torch_supa/csrc/core/supa/SUPAException.h>
+        #include <supa_runtime.h>
+
+        extern "C" {
+          C10_EXPORT int called_dummy_alloc = 0;
+          C10_EXPORT int called_dummy_free = 0;
+
+          C10_EXPORT void* dummy_alloc(size_t size, int device, void* stream) {
+            called_dummy_alloc = 123;
+            void* ptr;
+            C10_SUPA_CHECK(supaMallocManaged(&ptr, size));
+            return ptr;
+          }
+
+          C10_EXPORT void dummy_free(void* ptr, size_t size, int device, void* stream) {
+            called_dummy_free = 321;
+            C10_SUPA_CHECK(supaFree(ptr));
+          }
+        }
+        """
+        dummy_allocator_libname = "dummy_allocator"
+        dummy_allocator = load_inline(
+            name=dummy_allocator_libname,
+            cpp_sources=dummy_allocator_source,
+            is_python_module=False,
+            keep_intermediates=False,
+            verbose=True,
+            with_supa=True,
+            extra_ldflags=[f"-L{torch_supa_home}/lib", "-ltorch_supa"],
+        )
+        allocator = torch.cuda.memory.CUDAPluggableAllocator(
+            dummy_allocator,
+            "dummy_alloc",
+            "dummy_free",
+        )
+        return allocator, dummy_allocator
+
+
+    @pytest.mark.sanity
+    @pytest.mark.regression
+    def test_mempool_id(self):
+        pool1 = torch.cuda.graph_pool_handle()
+        pool2 = torch.cuda.MemPool().id
+
+        # first value of id in a user created pool is always zero
+        self.assertEqual(pool1[0] == 0, pool2[0] == 0)
+
+        # each call to torch.cuda.graph_pool_handle() or torch.cuda.MemPool()
+        # increments the id
+        self.assertTrue(abs(pool2[1] - pool1[1]) > 0)
+
+
+    @pytest.mark.sanity
+    @pytest.mark.regression
+    def test_mempool_context(self):
+        active_pool = torch.cuda.MemPoolContext.active_pool()
+
+        # there is no active pool if none was made active
+        self.assertEqual(active_pool, None)
+
+        pool = torch.cuda.MemPool()
+        ctx = torch.cuda.MemPoolContext(pool)
+        active_pool = torch.cuda.MemPoolContext.active_pool()
+
+        # pool was made active
+        self.assertEqual(active_pool, pool)
+
+        del ctx
+        active_pool = torch.cuda.MemPoolContext.active_pool()
+
+        # ctx was deleted, so active pool is the previous one
+        self.assertEqual(active_pool, None)
+
+
+    @pytest.mark.regression
+    def test_mempool_with_allocator(self):
+        pool = torch.cuda.MemPool()
+
+        # MemPool doesn't have an allocator by default
+        self.assertEqual(pool.allocator, None)
+        allocator, dummy_allocator = self.get_dummy_allocator()
+
+        pool = torch.cuda.MemPool(allocator.allocator())
+
+        # pool should point to the same allocator as the one passed into it
+        self.assertEqual(allocator.allocator(), pool.allocator)
+
+        # pool's use count should be 1 at this point as MemPool object
+        # holds a reference
+        self.assertEqual(pool.use_count(), 1)
+
+        # no allocations happened yet, so called_dummy_alloc and
+        # called_dummy_free should be 0
+        alloc_lib = ctypes.CDLL(dummy_allocator)
+        called_dummy_alloc = ctypes.c_int.in_dll(alloc_lib, "called_dummy_alloc")
+        called_dummy_free = ctypes.c_int.in_dll(alloc_lib, "called_dummy_free")
+        self.assertEqual(called_dummy_alloc.value, 0)
+        self.assertEqual(called_dummy_free.value, 0)
+
+        nelem_1mb = 1024 * 1024 // 4
+
+        with torch.cuda.use_mem_pool(pool):
+            out_0 = torch.randn(nelem_1mb, device="cuda")
+
+            # pool's use count should be 2 at this point as use_mem_pool
+            # holds a reference
+            self.assertEqual(pool.use_count(), 2)
+
+        # pool's use count should be back to 1 at this point as use_mem_pool
+        # released its reference
+        self.assertEqual(pool.use_count(), 1)
+
+        # called_dummy_alloc should be 123 if dummy_alloc was used to allocate
+        # out tensor
+        self.assertEqual(called_dummy_alloc.value, 123)
+
+        with torch.cuda.use_mem_pool(pool):
+            # pool should have 1 segment since we made a small allocation (1 MB)
+            # above and so the SUPACachingAllocator packed it into a 2 MB buffer
+            self.assertEqual(len(pool.snapshot()), 1)
+
+            out_1 = torch.randn(nelem_1mb, device="cuda")
+
+            # pool should still have 1 segment since we made another small allocation
+            # (1 MB) that got packed into the existing 2 MB buffer
+            self.assertEqual(len(pool.snapshot()), 1)
+
+            out_2 = torch.randn(nelem_1mb, device="cuda")
+
+            # pool now should have 2 segments since the SUPACachingAllocator had
+            # to make a new 2 MB buffer to accomodate out_2
+            self.assertEqual(len(pool.snapshot()), 2)
+
+        del out_0, out_1, out_2
+
+        # pool's destructor calls emptyCache()
+        del pool
+
+        # called_dummy_free should be 321 if dummy_free was used to deallocate
+        # out tensor
+        self.assertEqual(called_dummy_free.value, 321)

@@ -10,6 +10,7 @@
 #include <torch/library.h>
 
 #include "torch_supa/csrc/core/supa/SUPAException.h"
+#include "torch_supa/csrc/utils/EnvConfig.h"
 
 /*
  * This file implements a variable fallback kernel for custom operators.
@@ -40,9 +41,12 @@ bool has_op_name_warned(const std::string& op_name) {
   return false;
 }
 
-void supa_cpu_fallback(
-    const c10::OperatorHandle& op,
-    torch::jit::Stack* stack) {
+void supa_cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  TORCH_CHECK(
+      torch_supa::utils::EnvConfig::IsEnableCPUFallback(),
+      "CAUTION: The operator '",
+      op.schema().operator_name(),
+      "' is not currently supported on the SUPA backend and CPU fallback is disabled by BRTB_ENABLE_CPU_FALLBACK=0.");
   if (!has_op_name_warned(c10::toString(op.schema().operator_name()))) {
     // not implement (refer NPU)
     TORCH_WARN(
@@ -59,17 +63,14 @@ TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(torch::CppFunction::makeFromBoxedFunction<&supa_cpu_fallback>());
 }
 
-void supa_Sparse_fallback(
-    const c10::OperatorHandle& op,
-    torch::jit::Stack* stack){TORCH_CHECK(
+void supa_Sparse_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack){TORCH_CHECK(
     false,
     "CAUTION: The operator '",
     op.schema().operator_name(),
     "' is not currently supported on the SUPA backend.")}
 
 TORCH_LIBRARY_IMPL(_, SparsePrivateUse1, m) {
-  m.fallback(
-      torch::CppFunction::makeFromBoxedFunction<&supa_Sparse_fallback>());
+  m.fallback(torch::CppFunction::makeFromBoxedFunction<&supa_Sparse_fallback>());
 }
 
 } // namespace

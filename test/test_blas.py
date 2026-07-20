@@ -12,7 +12,6 @@ from torch_supa.testing.common_utils import (
     assert_equal,
     create_random_tensor,
     getDefaultRtolAndAtol,
-    precisionsDefault,
 )
 
 ATOL = 8 * 1e-3
@@ -40,7 +39,7 @@ alphas = [
     1.0,
 ]
 
-dtypes = [torch.float32]
+dtypes = [torch.float32, torch.bfloat16, torch.float16]
 
 requires_grads = [False, True]
 
@@ -317,6 +316,12 @@ def test_dot(input_shape, dtype):
 
     assert_allclose(output_cpu, output_supa, rtol=1e-5, atol=5e-5)
 
+    cpu_out = torch.empty((), dtype=dtype)
+    supa_out = cpu_out.supa()
+    torch.dot(cpu_input, cpu_input, out=cpu_out)
+    torch.dot(supa_input, supa_input, out=supa_out)
+    assert_allclose(cpu_out, supa_out, rtol=1e-5, atol=5e-5)
+
 
 @pytest.mark.sanity
 @pytest.mark.gcuSmoke
@@ -329,6 +334,12 @@ def test_vdot(input_shape, dtype):
     output_supa = torch.vdot(supa_input, supa_input)
 
     assert_allclose(output_cpu, output_supa, rtol=1e-5, atol=5e-5)
+
+    cpu_out = torch.empty((), dtype=dtype)
+    supa_out = cpu_out.supa()
+    torch.vdot(cpu_input, cpu_input, out=cpu_out)
+    torch.vdot(supa_input, supa_input, out=supa_out)
+    assert_allclose(cpu_out, supa_out, rtol=1e-5, atol=5e-5)
 
 
 mmv_shapes = [
@@ -717,7 +728,7 @@ def _test_addmm_addmv(
     beta=None,
     transpose_out=False,
     activation=None,
-    precisionOverride=precisionsDefault,
+    precisionOverride={},
     equal=False,
 ):
     dtype = t.dtype
@@ -756,7 +767,7 @@ def _test_addmm_addmv(
     res3 = torch.from_numpy(res3).to(dtype)
     if not equal:
         rtol, atol = getDefaultRtolAndAtol(dtype)
-        rtol, atol = max(0.0, rtol), max(0.0, atol)
+        rtol, atol = max(0.0, rtol), max(precisionOverride.get(dtype, 0), atol)
         assert_allclose(res1.cpu(), res2.cpu(), atol=atol, rtol=rtol, equal_nan=True)
         assert_allclose(res1.cpu(), res3.cpu(), atol=atol, rtol=rtol, equal_nan=True)
     else:
@@ -1023,7 +1034,7 @@ import itertools
 @pytest.mark.regression
 @pytest.mark.gcuSanity
 @pytest.mark.gcuStress
-@pytest.mark.parametrize("dtype", dtypes)
+@pytest.mark.parametrize("dtype", [torch.float32])
 # @pytest.mark.skip(reason="CUBLAS_STATUS_NOT_SUPPORTED when calling `cublasGemmStridedBatchedEx`\
 #                           CUBLAS_STATUS_NOT_SUPPORTED when calling `cublasSgemmEx`")
 def test_baddbmm_nan_input_with_zero_beta(dtype, device=supa_device):

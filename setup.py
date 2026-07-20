@@ -321,6 +321,7 @@ class CPPLibBuild(build_clib, object):
             "-DBRCC_ENABLE_DEBUGGING_OPTIONS=" + ("ON" if BRCC_ENABLE_DEBUGGING_OPTIONS else "OFF"),
             "-DUSE_PING_PONG=" + ("ON" if USE_PING_PONG else "OFF"),
             "-DUSE_PARALLEL_COMPILE=" + ("ON" if USE_PARALLEL_COMPILE else "OFF"),
+            "-DUSE_CCACHE=" + ("ON" if USE_CCACHE else "OFF"),
             "-DENABLE_COVERAGE=" + ("ON" if ENABLE_COVERAGE else "OFF"),
             "-DENABLE_PERF_TOOLS=" + ("ON" if ENABLE_PERF_TOOLS else "OFF"),
             "-DTORCH_SUPA_OP_DIR=" + os.getenv("TORCH_SUPA_OP_DIR", default="OFF"),
@@ -593,6 +594,7 @@ extra_link_args = []
 def is_affirmative(x):
     return x.upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
+
 DEBUG = is_affirmative(os.getenv("DEBUG", default=""))
 BRCC_ENABLE_DEBUGGING_OPTIONS = is_affirmative(os.getenv("BRCC_ENABLE_DEBUGGING_OPTIONS", default="OFF"))
 USE_SPLIT_SUPA = is_affirmative(os.getenv("USE_SPLIT_SUPA", default="ON"))
@@ -600,6 +602,7 @@ USE_PING_PONG = is_affirmative(os.getenv("USE_PING_PONG", default="ON"))
 USE_KINETO = is_affirmative(os.getenv("USE_KINETO", default="ON"))
 USE_FLASH_ATTENTION = is_affirmative(os.getenv("USE_FLASH_ATTENTION", default="ON"))
 USE_PARALLEL_COMPILE = is_affirmative(os.getenv("USE_PARALLEL_COMPILE", default=""))
+USE_CCACHE = is_affirmative(os.getenv("USE_CCACHE", default="OFF"))
 USE_AUDITWHEEL = is_affirmative(os.getenv("USE_AUDITWHEEL", default=""))
 ENABLE_COVERAGE = is_affirmative(os.getenv("ENABLE_COVERAGE", default="OFF"))
 ENABLE_PERF_TOOLS = is_affirmative(os.getenv("ENABLE_PERF_TOOLS", default="OFF"))

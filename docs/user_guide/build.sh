@@ -1,1 +1,2 @@
- sphinx-build -M latexpdf source build
+make html 
+sphinx-build -M latexpdf source build

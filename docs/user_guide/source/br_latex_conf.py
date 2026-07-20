@@ -75,53 +75,53 @@ latex_elements = {
     'babel': r'\usepackage[english]{babel}\usepackage[UTF8,fontset=none]{ctex}',
     'polyglossia': '',
     'fontpkg': r'''
-        \IfFontExistsTF{Microsoft YaHei}{
-            \setmainfont{Microsoft YaHei}[
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+        \IfFontExistsTF{Source Han Sans SC}{
+            \setmainfont{Source Han Sans SC}[
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
-            \setsansfont{Microsoft YaHei}[
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+            \setsansfont{Source Han Sans SC}[
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
-            \setmonofont{Microsoft YaHei}[
+            \setmonofont{Source Han Sans SC}[
               Scale          = 0.9,
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
-            \setCJKmainfont{Microsoft YaHei}[
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+            \setCJKmainfont{Source Han Sans SC}[
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
-            \setCJKsansfont{Microsoft YaHei}[
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+            \setCJKsansfont{Source Han Sans SC}[
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
-            \setCJKmonofont{Microsoft YaHei}[
+            \setCJKmonofont{Source Han Sans SC}[
               Scale          = 0.9,
-              BoldFont       = Microsoft YaHei Bold,
-              ItalicFont     = Microsoft YaHei,
-              BoldItalicFont = Microsoft YaHei Bold,
+              BoldFont       = Source Han Sans SC Bold,
+              ItalicFont     = Source Han Sans SC,
+              BoldItalicFont = Source Han Sans SC Bold,
               AutoFakeBold   = 2.5,
               AutoFakeSlant  = 0.2
             ]
         }{
-            \PackageError{brlatex}{Microsoft YaHei font is required}{Install Microsoft YaHei and rebuild the PDF.}
+            \PackageError{brlatex}{Source Han Sans SC font is required}{Install Source Han Sans SC (思源黑体/思源雅黑) and rebuild the PDF.}
         }
     ''',
     'maketitle': r'''
@@ -173,6 +173,7 @@ latex_elements = {
         \usepackage{fancyvrb}
         \usepackage{upquote}
         \usepackage{etoolbox}
+        \usepackage{needspace}
 
         \geometry{left=1.65cm,right=1.65cm,top=2.2cm,bottom=2.2cm}
         \setlistdepth{15}
@@ -252,6 +253,11 @@ latex_elements = {
         \titleformat{\subsubsection}{\color{titleblue}\normalsize\bfseries}{\thesubsubsection}{0.5em}{}
         \titleformat{\paragraph}[block]{\color{titleblue}\normalsize\bfseries}{\theparagraph}{0.5em}{}
         \titleformat{\subparagraph}[block]{\color{titleblue}\normalsize\bfseries}{\thesubparagraph}{0.5em}{}
+        \pretocmd{\section}{\Needspace{6\baselineskip}}{}{}
+        \pretocmd{\subsection}{\Needspace{5\baselineskip}}{}{}
+        \pretocmd{\subsubsection}{\Needspace{4\baselineskip}}{}{}
+        \pretocmd{\paragraph}{\Needspace{3\baselineskip}}{}{}
+        \pretocmd{\subparagraph}{\Needspace{3\baselineskip}}{}{}
 
         \makeatletter
         \newcounter{subsubparagraph}[subparagraph]
@@ -385,12 +391,14 @@ latex_elements = {
               #1\dimexpr\linewidth-6pt-\spx@arrayrulewidth\relax-\tw@\tabcolsep-\spx@arrayrulewidth\relax}}
         \makeatother
         \AtBeginEnvironment{longtable}{%
+          \Needspace{8\baselineskip}%
           \setlength{\LTleft}{3pt}%
           \setlength{\LTright}{3pt}%
           \small%
           \sloppy%
         }
         \AtBeginEnvironment{tabular}{%
+          \Needspace{8\baselineskip}%
           \small%
           \sloppy%
         }

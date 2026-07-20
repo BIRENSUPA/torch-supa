@@ -4,128 +4,102 @@ API 说明
 原生 PyTorch API 支持度
 -----------------------------
 
-torch_supa 插件通过 PyTorch 的 PrivateUse1 机制实现与原生 PyTorch API 的高度兼容。用户无需修改现有 PyTorch 代码，只需将 ``cuda`` 设备替换为 ``supa`` 设备即可在壁仞硬件上运行。
+本节提供 torch_supa 对原生 PyTorch API 的限制说明和兼容性映射列表。
 
-具体 API 功能请参看 `PyTorch 官方 Python API 文档 <https://docs.pytorch.org/docs/stable/pytorch-api.html>`_。
+原生 PyTorch API 功能和使用方法请参看 `PyTorch 官方 Python API 文档 <https://docs.pytorch.org/docs/stable/pytorch-api.html>`_。 算子限制说明如下：
 
-本节提供 torch_supa 对原生 PyTorch API 的支持矩阵入口，用于查询不同模块的支持状态和限制说明。实际行为以对应版本的正式发布说明、API 支持矩阵和运行验证结果为准。
+.. list-table:: API限制说明
+   :widths: 60 40
+   :header-rows: 1
 
-torch_supa API 支持度及限制参见：
-
-- :ref:`torch <native-api-torch>`
-- :ref:`torch.nn <native-api-torch_nn>`
-- :ref:`torch.nn.functional <native-api-torch_nn_function>`
-- :ref:`torch.Tensor <native-api-torch_tensor>`
-- :ref:`Tensor Views <native-api-tensor_view>`
-- :ref:`torch.amp <native-api-torch_amp>`
-- :ref:`torch.autograd <native-api-torch_autograd>`
-- :ref:`torch.library <native-api-torch_library>`
-- :ref:`torch.accelerator <native-api-torch_accelerator>`
-- :ref:`torch.cuda <native-api-torch_cuda>`
-- :ref:`torch.distributed <native-api-torch_distributed>`
-- :ref:`torch.distributed.algorithms.join <native-api-torch_distributed_algorithms_join>`
-- :ref:`torch.distributed.elastic <native-api-torch_distributed_elastic>`
-- :ref:`torch.distributed.fsdp <native-api-torch_distributed_fsdp>`
-- :ref:`torch.distributed.tensor.parallel <native-api-torch_distributed_tensor_parallel>`
-- :ref:`torch.distributed.optim <native-api-torch_distributed_optim>`
-- :ref:`torch.distributed.pipelining <native-api-torch_distributed_pipelining>`
-- :ref:`torch.distributed.symmetric_memory <native-api-torch_distributed__symmetric_memory>`
-- :ref:`torch.distributed.checkpoint <native-api-torch_distributed_checkpoint>`
-- :ref:`torch.distributions <native-api-torch_distributions>`
-- :ref:`torch.compiler <native-api-torch_compiler>`
-- :ref:`torch.fft <native-api-torch_fft>`
-- :ref:`torch.func <native-api-torch_func>`
-- :ref:`torch.futures <native-api-torch_futures>`
-- :ref:`torch.fx <native-api-torch_fx>`
-- :ref:`torch.fx.experimental <native-api-torch_fx_experimental>`
-- :ref:`torch.hub <native-api-torch_hub>`
-- :ref:`torch.linalg <native-api-torch_linalg>`
-- :ref:`torch.monitor <native-api-torch_monitor>`
-- :ref:`torch.signal <native-api-torch_signal>`
-- :ref:`torch.special <native-api-torch_special>`
-- :ref:`torch.overrides <native-api-torch_overrides>`
-- :ref:`torch.package <native-api-torch_package>`
-- :ref:`torch.profiler <native-api-torch_profiler>`
-- :ref:`torch.nn.init <native-api-torch_nn_init>`
-- :ref:`torch.nn.attention <native-api-torch_nn_attention>`
-- :ref:`torch.onnx <native-api-torch_onnx>`
-- :ref:`torch.optim <native-api-torch_optim>`
-- :ref:`Quantization <native-api-quantization>`
-- :ref:`Distributed RPC Framework <native-api-distributed_rpc>`
-- :ref:`torch.random <native-api-torch_random>`
-- :ref:`torch.nested <native-api-torch_nested>`
-- :ref:`torch.sparse <native-api-torch_sparse>`
-- :ref:`torch.Storage <native-api-torch_storage>`
-- :ref:`torch.testing <native-api-torch_testing>`
-- :ref:`torch.utils <native-api-torch_utils>`
-- :ref:`torch.utils.benchmark <native-api-torch_utils_benchmark>`
-- :ref:`torch.utils.checkpoint <native-api-torch_utils_checkpoint>`
-- :ref:`torch.utils.cpp_extension <native-api-torch_utils_cpp_extension>`
-- :ref:`torch.utils.data <native-api-torch_utils_data>`
-- :ref:`torch.utils.dlpack <native-api-torch_utils_dlpack>`
-- :ref:`torch.utils.mobile_optimizer <native-api-torch_utils_mobile_optimizer>`
-- :ref:`torch.utils.model_zoo <native-api-torch_utils_model_zoo>`
-- :ref:`torch.utils.tensorboard <native-api-torch_utils_tensorboard>`
-- :ref:`Type Info <native-api-typeinfo>`
-- :ref:`Named Tensors <native-api-named_tensors>`
-- :ref:`torch.__config__ <native-api-torch_config>`
-- :ref:`torch._logging <native-api-torch_logging>`
-
-.. note::
-
-   各 ``native_api`` 页面中的表格用于说明 PyTorch API 在 torch_supa 中的支持情况。其中，“是否支持”列为空表示该 API 当前尚未完全验证；“限制”列为空表示当前未记录额外限制，或尚无已知限制说明。``double`` 和 ``complex`` 数据类型相关能力当前未做充分验证，使用前请结合实际模型和目标版本进行验证。实际支持情况仍以对应版本的正式发布说明、API 支持矩阵和运行验证结果为准。
-
-.. toctree::
-   :maxdepth: 2
-
-   native_api/torch
-   native_api/torch_nn
-   native_api/torch_nn_function
-   native_api/torch_tensor
-   native_api/tensor_view
-   native_api/torch_amp
-   native_api/torch_autograd
-   native_api/torch_library
-   native_api/torch_accelerator
-   native_api/torch_cuda
-   native_api/torch_distributed
-   native_api/torch_distributed_algorithms_join
-   native_api/torch_distributed_elastic
-   native_api/torch_distributed_fsdp
-   native_api/torch_distributed_tensor_parallel
-   native_api/torch_distributed_optim
-   native_api/torch_distributed_pipelining
-   native_api/torch_distributed__symmetric_memory
-   native_api/torch_distributed_checkpoint
-   native_api/torch_distributions
-   native_api/torch_compiler
-   native_api/torch_fft
-   native_api/torch_func
-   native_api/torch_futures
-   native_api/torch_fx
-   native_api/torch_fx_experimental
-   native_api/torch_hub
-   native_api/torch_linalg
-   native_api/torch_monitor
-   native_api/torch_signal
-   native_api/torch_special
-   native_api/torch_overrides
-   native_api/torch_package
-   native_api/torch_profiler
-   native_api/torch_nn_init
-   native_api/torch_nn_attention
-   native_api/torch_onnx
-   native_api/torch_optim
-   native_api/quantization
-   native_api/distributed_rpc
-   native_api/torch_random
-   native_api/torch_nested
-   native_api/torch_sparse
-   native_api/torch_storage
-   native_api/torch_testing
-   native_api/torch_utils
-   native_api/others
-   native_api/torch_backend
+   * - API
+     - 限制
+   * - ``scaled_dot_product_attention``
+     - ``SDPBackend::flash_attention`` 后端限制： ``head_size`` 仅支持 64、96、128、192、256、378、512; 仅支持 ``BFloat16`` 和 ``FLOAT32`` 。不支持 ``efficient_attention`` 后端。
+   * - ``inverse``
+     - 仅支持 ``FLOAT32``
+   * - ``torch.linalg.norm``
+     - 仅支持 ``FLOAT32`` 、 ``FLOAT16`` 
+   * - ``torch.linalg.vector_norm``
+     - 仅支持 ``FLOAT32`` 、 ``FLOAT16`` 
+   * - ``torch.linalg.matrix_norm``
+     - 仅支持 ``FLOAT32`` 、 ``FLOAT16``
+   * - ``torch.linalg.vecdot``
+     - 仅支持 ``FLOAT32``
+   * - ``torch.linalg.multi_dot``
+     - 仅支持 ``FLOAT32`` 、 ``FLOAT16`` 和 ``BFLOAT16``
+   * - ``torch.linalg.det``
+     - 不支持
+   * - ``torch.linalg.slogdet``
+     - 不支持
+   * - ``torch.linalg.cond``
+     - 不支持
+   * - ``torch.linalg.matrix_rank``
+     - 不支持
+   * - ``torch.linalg.cholesky``
+     - 不支持
+   * - ``torch.linalg.qr``
+     - 不支持
+   * - ``torch.linalg.lu``
+     - 不支持
+   * - ``torch.linalg.lu_factor``
+     - 不支持
+   * - ``torch.linalg.eig``
+     - 不支持
+   * - ``torch.linalg.eigvals``
+     - 不支持
+   * - ``torch.linalg.eigh``
+     - 不支持
+   * - ``torch.linalg.eigvalsh``
+     - 不支持
+   * - ``torch.linalg.svd``
+     - 不支持
+   * - ``torch.linalg.svdvals``
+     - 不支持
+   * - ``torch.linalg.solve``
+     - 不支持
+   * - ``torch.linalg.solve_triangular``
+     - 不支持
+   * - ``torch.linalg.lu_solve``
+     - 不支持
+   * - ``torch.linalg.lstsq``
+     - 不支持
+   * - ``torch.linalg.inv``
+     - 不支持
+   * - ``torch.linalg.pinv``
+     - 不支持
+   * - ``torch.linalg.matrix_exp``
+     - 不支持
+   * - ``torch.linalg.matrix_power``
+     - 不支持
+   * - ``torch.linalg.matmul``
+     - 不支持
+   * - ``torch.linalg.householder_product``
+     - 不支持
+   * - ``torch.linalg.tensorinv``
+     - 不支持
+   * - ``torch.linalg.tensorsolve``
+     - 不支持
+   * - ``torch.linalg.cholesky_ex``
+     - 不支持
+   * - ``torch.linalg.inv_ex``
+     - 不支持
+   * - ``torch.linalg.solve_ex``
+     - 不支持
+   * - ``torch.linalg.lu_factor_ex``
+     - 不支持
+   * - ``torch.linalg.ldl_factor``
+     - 不支持
+   * - ``torch.linalg.ldl_factor_ex``
+     - 不支持
+   * - ``torch.linalg.ldl_solve``
+     - 不支持
+   * - ``torch.fft.*``
+     - 不支持
+   * - ``torch.sparse.*``
+     - 不支持
+   * - ``torch.ao.quantization.*``
+     - 不支持
 
 自定义 API
 -------------------

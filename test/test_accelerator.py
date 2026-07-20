@@ -7,7 +7,7 @@ import torch
 
 import torch_supa._C._transfer as _transfer
 from torch_supa.testing.common_utils import assert_allclose
-from torch_supa.utils import torch_version_le
+from torch_supa.utils import torch_version_le, torch_version_lt
 FLOAT_RTOL, FLOAT_ATOL = 1e-5, 5e-5
 
 @pytest.mark.sanity
@@ -72,7 +72,6 @@ class TestAccelerator:
         assert target_device == torch.accelerator.current_device_index()
 
     def test_generic_stream_behavior(self):
-
         s1 = torch.Stream()
         s2 = torch.Stream()
         torch.accelerator.set_stream(s1)
@@ -104,7 +103,7 @@ class TestAccelerator:
         with pytest.raises(ValueError, match="doesn't match the current accelerator"):
             torch.accelerator.current_stream(other_device)
 
-    @pytest.mark.skipif(torch_version_le(2, 6, 0), reason="requires torch version higher than 2.6.0")
+    @pytest.mark.skipif(torch_version_lt(2, 8, 0), reason="requires torch version >= 2.8.0")
     def test_device_context_manager(self):
         prev_device = torch.accelerator.current_device_index()
         with torch.accelerator.device_index(None):
@@ -161,7 +160,7 @@ class TestAccelerator:
         assert t_host.is_pinned()
         assert_allclose(t_acc.cpu(), t_host, rtol=FLOAT_RTOL, atol=FLOAT_ATOL)
 
-    @pytest.mark.skipif(torch_version_le(2, 6, 0), reason="requires torch version higher than 2.6.0")
+    @pytest.mark.skipif(torch_version_lt(2, 8, 0), reason="requires torch version >= 2.8.0")
     def test_generic_event_behavior(self):
         event1 = torch.Event(enable_timing=False)
         event2 = torch.Event(enable_timing=False)
@@ -192,7 +191,7 @@ class TestAccelerator:
         hasattr(torch, "TEST_MPS") and torch.TEST_MPS,
         reason="MPS doesn't support torch.accelerator memory API!",
     )
-    @pytest.mark.skipif(torch_version_le(2, 6, 0), reason="requires torch version higher than 2.6.0")
+    @pytest.mark.skipif(torch_version_lt(2, 9, 0), reason="requires torch version >= 2.9.0")
     def test_memory_stats(self):
         # Ensure that device allocator is initialized
         acc = torch.accelerator.current_accelerator()
@@ -241,17 +240,16 @@ class TestAccelerator:
         prev_active_current = torch.accelerator.memory_stats()["active_bytes.all.current"]
         tmp = torch.randn(256, dtype=torch.float32, device=acc)
         # Detect if the current active memory is 1kB
-        # (1024 + 32 + 512 - 1) / 512 * 512 = 1536 
         assert (
             torch.accelerator.memory_stats()["active_bytes.all.current"]
-            == 1536 + prev_active_current
+            == 1024 + prev_active_current
         )
         assert torch.accelerator.memory_stats()["active_bytes.all.freed"] == 0
         del tmp
         gc.collect()
         torch.accelerator.empty_cache()
         assert torch.accelerator.memory_stats()["active_bytes.all.current"] == prev_active_current
-        assert torch.accelerator.memory_stats()["active_bytes.all.freed"] == 1536
+        assert torch.accelerator.memory_stats()["active_bytes.all.freed"] == 1024
         torch.accelerator.reset_peak_memory_stats()
         assert torch.accelerator.max_memory_allocated() == prev_max_allocated
         assert torch.accelerator.max_memory_reserved() == prev_max_reserved

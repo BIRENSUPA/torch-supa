@@ -16,7 +16,7 @@ namespace torch_supa::utils {
 namespace EnvConfig {
 
 class ConfigState {
-public:
+ public:
   ConfigState();
   // Global static configuration from environment var
   bool debug_ = false;
@@ -29,25 +29,28 @@ public:
 #endif
 };
 
-ConfigState &Instance();
+ConfigState& Instance();
 
-bool getEnv(const char *env_name, bool default_value);
-int getEnv(const char *env_name, int default_value);
-double getEnv(const char *env_name, double default_value);
-const char *getEnv(const char *env_name, const char *default_value);
+bool getEnv(const char* env_name, bool default_value);
+int getEnv(const char* env_name, int default_value);
+double getEnv(const char* env_name, double default_value);
+const char* getEnv(const char* env_name, const char* default_value);
 
 // static:    value got from environment once and never changed.
-#define DEFINE_STATIC_ENV_VAR(_ENV, _VAR, _T, _DFT)                            \
-  class Env_##_VAR {                                                           \
-  public:                                                                      \
-    static inline _T value =                                                   \
-        (#_ENV[0] == '\0') ? static_cast<_T>(_DFT)                             \
-                           : getEnv("BRTB_" #_ENV, static_cast<_T>(_DFT));     \
-  };                                                                           \
-                                                                               \
-  static inline _T Get##_VAR() { return Env_##_VAR::value; }                   \
-                                                                               \
-  static inline bool Is##_VAR() { return Get##_VAR(); }
+#define DEFINE_STATIC_ENV_VAR(_ENV, _VAR, _T, _DFT)                                                \
+  class Env_##_VAR {                                                                               \
+   public:                                                                                         \
+    static inline _T value =                                                                       \
+        (#_ENV[0] == '\0') ? static_cast<_T>(_DFT) : getEnv("BRTB_" #_ENV, static_cast<_T>(_DFT)); \
+  };                                                                                               \
+                                                                                                   \
+  static inline _T Get##_VAR() {                                                                   \
+    return Env_##_VAR::value;                                                                      \
+  }                                                                                                \
+                                                                                                   \
+  static inline bool Is##_VAR() {                                                                  \
+    return Get##_VAR();                                                                            \
+  }
 
 // clang-format off
 
@@ -63,6 +66,7 @@ DEFINE_STATIC_ENV_VAR(ENABLE_FLUSH_LOG_INSTANTLY, EnableFlushLogInstantly, bool,
 DEFINE_STATIC_ENV_VAR(ASYNC_LOGGER_QUEUE_SIZE, AsyncLoggerQueueSize, int, 1048576)
 DEFINE_STATIC_ENV_VAR(SUBLAS_PREFERRED_BACKEND, SublasPreferredBackend, const char*, "Sublas")
 DEFINE_STATIC_ENV_VAR(ENABLE_NATIVE_OP, EnableNativeOP, bool, false)
+DEFINE_STATIC_ENV_VAR(ENABLE_CPU_FALLBACK, EnableCPUFallback, bool, true)
 DEFINE_STATIC_ENV_VAR(ENABLE_DTYPE_DEMOTION, EnableDtypeDemotion, bool, false)
 // clang-format on
 

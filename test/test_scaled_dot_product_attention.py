@@ -192,7 +192,6 @@ class TestSDPAMethod:
     @pytest.mark.regression
     @pytest.mark.gcuSanity
     @pytest.mark.gcuStress
-    @pytest.mark.skip("sudnn update required")
     def test_cudnn_attention(self):
         query, key, value = (
             torch.randn(1, 128, 1, 64, dtype=torch.float16),
@@ -222,7 +221,6 @@ class TestSDPAMethod:
             (1, 1, 128, 128, 64)
         ],
     )
-    @pytest.mark.skip("sudnn update required")
     def test_cudnn_attention_bwd(self, batch_size, num_heads, q_len, kv_len, head_size):
         shape_q = (batch_size, q_len, num_heads, head_size)
         shape_kv = (batch_size, kv_len, num_heads, head_size)

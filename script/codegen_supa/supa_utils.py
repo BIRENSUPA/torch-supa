@@ -205,10 +205,18 @@ class CustomYamlProcessor:
 
         backend_indics.clear()
         backend_indics[CustomYamlProcessor.dispatch_key] = BackendIndex(
-            CustomYamlProcessor.dispatch_key, True, False, True, kernels
+            dispatch_key=CustomYamlProcessor.dispatch_key,
+            use_out_as_primary=True,
+            device_guard=True,
+            external=True,
+            index=kernels,
         )
         backend_indics[CustomYamlProcessor.autograd_dispatch_key] = BackendIndex(
-            CustomYamlProcessor.autograd_dispatch_key, True, False, True, autograd_kernels
+            dispatch_key=CustomYamlProcessor.autograd_dispatch_key,
+            use_out_as_primary=True,
+            device_guard=True,
+            external=True,
+            index=autograd_kernels,
         )
 
     def add_custom_op(

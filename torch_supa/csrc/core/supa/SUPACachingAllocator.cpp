@@ -1689,33 +1689,25 @@ class DeviceCachingAllocator {
   std::vector<SegmentInfo> snapshot(MempoolId_t mempool_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
-    std::unordered_map<PrivatePool*, MempoolId_t> pool_to_id;
-    pool_to_id.reserve(graph_pools.size() + graph_pools_freeable.size());
-
     std::vector<Block*> all_blocks;
+
+    auto active_mempool = MemPoolContext::getActiveMemPool();
+    if (active_mempool) {
+      mempool_id = active_mempool->id();
+    }
 
     if (mempool_id.first != 0 || mempool_id.second != 0) {
       // If there is an active mempool, we find the corresponding PrivatePool
       // in graph_pools and only return the blocks from it.
       auto pool = graph_pools.find(mempool_id);
       if (pool != graph_pools.end()) {
-        pool_to_id[pool->second.get()] = pool->first;
         all_blocks = get_private_pool_head_blocks(pool->second.get());
-      }
-      auto pool_freeable = graph_pools_freeable.find(mempool_id);
-      if (pool_freeable != graph_pools_freeable.end()) {
-        pool_to_id[pool_freeable->second] = pool_freeable->first;
       }
     } else {
       // When snapshot is called outside a MemPoolContext, we return
       // all the blocks in the SUPACachingAllocator (as returned by
       // get_all_blocks).
-      for (const auto& pair : graph_pools) {
-        pool_to_id[pair.second.get()] = pair.first;
-      }
-      for (const auto& pair : graph_pools_freeable) {
-        pool_to_id[pair.second] = pair.first;
-      }
+      all_blocks = get_all_blocks();
     }
 
     size_t total_active = 0;
@@ -1735,9 +1727,9 @@ class DeviceCachingAllocator {
       segment_info.is_large = (!head_block->pool->is_small);
       segment_info.is_expandable = head_block->expandable_segment_;
       segment_info.context_when_allocated = head_block->context_when_segment_allocated;
-      auto mempool_id = pool_to_id.find(head_block->pool->owner_PrivatePool);
-      if (mempool_id != pool_to_id.end()) {
-        segment_info.owner_private_pool_id = mempool_id->second;
+      MempoolId_t id = head_block->pool->owner_MempoolId();
+      if ((mempool_id.first == 0 && mempool_id.second == 0) || id == mempool_id) {
+        segment_info.owner_private_pool_id = id;
       }
 
       const Block* block = head_block;
@@ -1795,10 +1787,31 @@ class DeviceCachingAllocator {
     return result;
   }
 
+  static size_t roundup_power2_next_division(size_t size, size_t divisions) {
+    if (llvm::isPowerOf2_64(size)) {
+      return size;
+    }
+
+    TORCH_CHECK(divisions >= 2, "Only 2 or more divisions are supported");
+
+    // divide the space between these 2's power into equal divisions
+    // If division is zero, return the power-of-2 ceiling.
+    size_t power2_floor = llvm::PowerOf2Floor(size);
+    size_t power2_divison = power2_floor >> (63 - llvm::countLeadingZeros(divisions));
+    if (C10_UNLIKELY(power2_divison == 0)) {
+      return (power2_floor << 1);
+    }
+    size_t round_size_floor = size & (~(power2_divison - 1));
+    return (round_size_floor == size) ? size : round_size_floor + power2_divison;
+  }
+
   static size_t round_size(size_t size) {
-    size = size + 32;
     if (size < kMinBlockSize) {
       return kMinBlockSize;
+    }
+    auto divisions = SUPAAllocatorConfig::roundup_power2_divisions(size);
+    if (divisions > 1 && size > (kMinBlockSize * divisions)) {
+      return roundup_power2_next_division(size, divisions);
     }
     return kMinBlockSize * ((size + kMinBlockSize - 1) / kMinBlockSize);
   }
@@ -1904,8 +1917,8 @@ class DeviceCachingAllocator {
 
  private:
   // All private methods do not acquire the allocator mutex.
-  std::vector<const Block*> get_all_blocks() const {
-    std::vector<const Block*> blocks;
+  std::vector<Block*> get_all_blocks() const {
+    std::vector<Block*> blocks;
     blocks.insert(blocks.end(), small_blocks.blocks.begin(), small_blocks.blocks.end());
     blocks.insert(blocks.end(), large_blocks.blocks.begin(), large_blocks.blocks.end());
     for (const auto& gp : graph_pools) {
@@ -2365,7 +2378,8 @@ class DeviceCachingAllocator {
       while (it != large_blocks.blocks.end()) {
         Block* block = *it;
         ++it;
-        if (!block->is_split() && static_cast<double>(block->gc_count()) >= age_threshold) {
+        if (!block->is_split() && !block->expandable_segment_ &&
+            static_cast<double>(block->gc_count()) >= age_threshold) {
           block_freed = true;
           gc_reclaimed += block->size;
           total_age -= static_cast<double>(block->gc_count()); // Decrement the age
@@ -2514,7 +2528,7 @@ class DeviceCachingAllocator {
     Block key(p.search_key.device, p.search_key.stream, p.search_key.size);
     key.size = (key.size < SUPAAllocatorConfig::max_split_size()) ? SUPAAllocatorConfig::max_split_size() : key.size;
     auto it = pool.blocks.lower_bound(&key);
-    if (it == pool.blocks.end() || (*it)->stream != p.stream()) {
+    if (it == pool.blocks.end() || (*it)->stream != p.stream() || (*it)->expandable_segment_) {
       // No single block is large enough; free multiple oversize blocks,
       // starting with the largest
       if (it == pool.blocks.begin()) {
@@ -2526,12 +2540,15 @@ class DeviceCachingAllocator {
       while ((totalReleased < key.size) && ((*it)->size >= SUPAAllocatorConfig::max_split_size()) &&
              ((*it)->stream == p.stream())) {
         auto cur = it;
-        totalReleased += (*it)->size;
-        if (it != pool.blocks.begin()) {
+        bool is_first = cur == pool.blocks.begin();
+        if (!is_first) {
           --it;
+        }
+        if (!(*cur)->expandable_segment_) {
+          totalReleased += (*cur)->size;
           release_block(*cur, context);
-        } else {
-          release_block(*cur, context);
+        }
+        if (is_first) {
           break;
         }
       }
@@ -2545,6 +2562,11 @@ class DeviceCachingAllocator {
   }
 
   bool release_cached_blocks(const std::shared_ptr<GatheredContext>& context, MempoolId_t mempool_id) {
+    auto active_mempool = MemPoolContext::getActiveMemPool();
+    if (active_mempool) {
+      mempool_id = active_mempool->id();
+    }
+
     if (mempool_id.first == 0 && mempool_id.second == 0 && captures_underway.empty()) {
       // If there is no active mempool, we work on releasing *all* blocks.
 

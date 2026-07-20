@@ -10,10 +10,6 @@ import torch.nn.functional as F
 _ORIGINAL_ONE_HOT = F.one_hot
 
 
-def _is_supa_tensor(tensor):
-    return isinstance(tensor, torch.Tensor) and tensor.device.type == "supa"
-
-
 def _one_hot_fused_enabled():
     return os.getenv("BRTB_ENABLE_NATIVE_OP", "0").lower() not in ("1", "true", "on", "yes")
 
@@ -21,7 +17,7 @@ def _one_hot_fused_enabled():
 def _can_use_one_hot_fused(tensor, num_classes):
     return (
         _one_hot_fused_enabled()
-        and _is_supa_tensor(tensor)
+        and tensor.is_supa
         and tensor.dtype == torch.int64
         and isinstance(num_classes, int)
         and num_classes > 0

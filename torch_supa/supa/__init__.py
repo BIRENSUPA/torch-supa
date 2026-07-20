@@ -171,6 +171,12 @@ def is_available():
         return False
     return device_count() > 0
 
+
+def __getattr__(name: str) -> Any:
+    if name == "_initialized":
+        return is_initialized()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 from .amp import *  # noqa: F403
 from .memory import *  # noqa: F403
 

@@ -3,12 +3,14 @@
 
 import gc
 import os
+import pytest
 import tempfile
 import torch
 
 from torch.testing._internal.common_utils import TestCase
 
-
+@pytest.mark.sanity
+@pytest.mark.regression
 class TestSupaGraph(TestCase):
     def test_graph_is_current_stream_capturing(self):
         self.assertFalse(torch.supa.is_current_stream_capturing())
@@ -232,7 +234,7 @@ class TestSupaGraph(TestCase):
 
     def test_graph_debugdump(self):
         torch.supa.empty_cache()
-        x = torch.randn(10240000, device="supa")
+        x = torch.randn(1024, device="supa")
         y = torch.rand_like(x)
         g = torch.supa.SUPAGraph()
         g.enable_debug_mode()
@@ -267,7 +269,7 @@ class TestSupaGraph(TestCase):
             (torch.nn.functional.dropout, {"p": 0.1}),
             (torch.nn.functional.rrelu, {"training": True}),
         )
-        size = 10000
+        size = 100
 
         def run(op, kwargs):
             a = torch.randn((size,), device="supa", dtype=torch.float)

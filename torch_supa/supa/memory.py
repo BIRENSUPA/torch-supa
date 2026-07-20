@@ -25,6 +25,8 @@ from . import (
 )
 
 __all__ = [
+    "_record_memory_history",
+    "_snapshot",
     "caching_allocator_alloc",
     "caching_allocator_delete",
     "caching_allocator_enable",

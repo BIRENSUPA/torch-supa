@@ -13,6 +13,8 @@
 
 namespace c10::supa::SUPACachingAllocator {
 
+constexpr size_t kRoundUpPowerOfTwoIntervals = 16;
+
 static constexpr size_t kMinBlockSize = 512; // all sizes are rounded to at least 512 bytes
 static constexpr size_t kSmallSize = 1024 * 1024; // largest "small"cd .. allocation is 1 MiB
 static constexpr size_t kSmallBuffer = 2 * 1024 * 1024UL; // "small" allocations are packed in 2 MiB blocks
@@ -35,6 +37,10 @@ class C10_SUPA_API SUPAAllocatorConfig {
  public:
   static size_t max_split_size() {
     return instance().m_max_split_size;
+  }
+
+  static size_t max_non_split_rounding_size() {
+    return instance().m_max_non_split_rounding_size;
   }
 
   static double garbage_collection_threshold() {
@@ -73,6 +79,12 @@ class C10_SUPA_API SUPAAllocatorConfig {
     return instance().m_pinned_use_background_threads;
   }
 
+  static size_t roundup_power2_divisions(size_t size);
+
+  static std::vector<size_t> roundup_power2_divisions() {
+    return instance().m_roundup_power2_divisions;
+  }
+
   static SUPAAllocatorConfig& instance() {
     static SUPAAllocatorConfig* s_instance = ([]() {
       auto* inst = new SUPAAllocatorConfig(); // NOLINT(cppcoreguidelines-owning-memory)
@@ -87,6 +99,8 @@ class C10_SUPA_API SUPAAllocatorConfig {
 
  private:
   std::atomic<size_t> m_max_split_size;
+  std::atomic<size_t> m_max_non_split_rounding_size;
+  std::vector<size_t> m_roundup_power2_divisions;
   std::atomic<double> m_garbage_collection_threshold;
   std::atomic<size_t> m_pinned_num_register_threads;
   std::atomic<size_t> m_pinned_reserve_segment_size_mb;
@@ -98,17 +112,21 @@ class C10_SUPA_API SUPAAllocatorConfig {
 
   SUPAAllocatorConfig()
       : m_max_split_size(std::numeric_limits<size_t>::max()),
+        m_max_non_split_rounding_size(kLargeBuffer),
         m_garbage_collection_threshold(0),
         m_pinned_num_register_threads(1),
         m_pinned_reserve_segment_size_mb(0),
         m_expandable_segments(false),
         m_release_lock_on_supamalloc(false),
         m_pinned_use_supa_host_register(false),
-        m_pinned_use_background_threads(false) {}
+        m_pinned_use_background_threads(false) {
+    m_roundup_power2_divisions.assign(kRoundUpPowerOfTwoIntervals, 0);
+  }
 
   static void lexArgs(const char* env, std::vector<std::string>& config);
   static void consumeToken(const std::vector<std::string>& config, size_t i, char c);
   size_t parseMaxSplitSize(const std::vector<std::string>& config, size_t i);
+  size_t parseMaxNonSplitRoundingSize(const std::vector<std::string>& config, size_t i);
   size_t parseGarbageCollectionThreshold(const std::vector<std::string>& config, size_t i);
   size_t parsePinnedUseSupaHostRegister(const std::vector<std::string>& config, size_t i);
   size_t parsePinnedNumRegisterThreads(const std::vector<std::string>& config, size_t i);

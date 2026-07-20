@@ -1,6 +1,7 @@
 # Copyright (C) 2020-2026 Shanghai Biren Technology Co., Ltd.
 
 import os
+import re
 import warnings
 import json
 import collections
@@ -65,6 +66,11 @@ def _get_package_version(package_name):
 
 def _compare_versions(current_version, version):
     return Version(current_version) >= Version(version)
+
+
+def _torch_version_at_least(major, minor):
+    match = re.match(r"^(\d+)\.(\d+)", torch.__version__)
+    return bool(match) and (int(match.group(1)), int(match.group(2))) >= (major, minor)
 
 
 def _check_input_file_valid(file_path):
@@ -314,6 +320,10 @@ class PatchCUDA_default_generators(torch.cuda.__class__):
     def default_generators(self):
         return torch.supa.default_generators
 
+    @property
+    def _initialized(self):
+        return torch.supa.is_initialized()
+
     def __reduce__(self):
         return (_load_torch_cuda, ())
 
@@ -391,6 +401,20 @@ def _init():
     torch._C._get_device_properties = torch_supa._C._supa_getDeviceProperties
     torch._C._graph_pool_handle = torch_supa._C._graph_pool_handle
     torch._C._cuda_ipc_collect = torch_supa._C._supa_ipc_collect
+    if not hasattr(torch._C, "_scatter"):
+        torch._C._scatter = torch_supa._C._supa_scatter
+    if not hasattr(torch._C, "_scatter_out"):
+        torch._C._scatter_out = torch_supa._C._supa_scatter_out
+    if not hasattr(torch._C, "_gather"):
+        torch._C._gather = torch_supa._C._supa_gather
+    if not hasattr(torch._C, "_gather_out"):
+        torch._C._gather_out = torch_supa._C._supa_gather_out
+    if not hasattr(torch._C, "_broadcast_coalesced"):
+        torch._C._broadcast_coalesced = torch_supa._C._supa_broadcast_coalesced
+    if not hasattr(torch._C, "_broadcast"):
+        torch._C._broadcast = torch_supa._C._supa_broadcast
+    if not hasattr(torch._C, "_broadcast_out"):
+        torch._C._broadcast_out = torch_supa._C._supa_broadcast_out
 
     # torch.backend.*
     _patch_torch_backends()

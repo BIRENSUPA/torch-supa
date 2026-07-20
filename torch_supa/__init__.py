@@ -3,6 +3,8 @@
 import sys
 import os
 import types
+import atexit
+import gc
 
 # Disable autoloading before running 'import torch' to avoid circular dependencies
 ORG_AUTOLOAD = os.getenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "1")
@@ -36,6 +38,7 @@ all_monkey_patches = [
     ["profiler", torch_supa.profiler.profiler],
     ["autograd.profiler", torch_supa.profiler.profiler.prof],
 ]
+
 
 def _apply_patches(monkey_patches):
 
